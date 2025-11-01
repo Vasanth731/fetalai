@@ -15,7 +15,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------------- LOAD MODEL ----------------
 model = YNet(input_channels=input_channels, output_channels=output_channels, n_class=n_class)
-model.load_state_dict(torch.load("/home/htic/vasanth/bio_seg/weights/fuvai_weights.pt", map_location=device))
+model.load_state_dict(torch.load("/home/htic/vasanth/fetalai_project/weights/fuvai_weights.pt", map_location=device))
 model = model.to(device)
 model.eval()  # start in eval mode
 
@@ -24,7 +24,7 @@ model.eval()  # start in eval mode
 def enable_dropout(model):
     """Keep dropout layers active during inference."""
     for m in model.modules():
-        if isinstance(m, torch.nn.Dropout):
+        if isinstance(m, (torch.nn.Dropout, torch.nn.Dropout2d)):
             m.train()
 
 
@@ -45,7 +45,7 @@ def preprocess_image_rgb(img_path):
 
 # ---------------- INFERENCE (WITH OPTIONAL UNCERTAINTY) ----------------
 @torch.no_grad()
-def run_inference(image_path, monte_carlo=False, n_samples=10, save_mc_masks_dir=None, filename_prefix=""):
+def run_inference(image_path, monte_carlo=False, n_samples=10):
     input_tensor, resized_gray = preprocess_image_for_model(image_path)
 
     # ---------- MONTE CARLO DROPOUT MODE ----------
@@ -60,11 +60,6 @@ def run_inference(image_path, monte_carlo=False, n_samples=10, save_mc_masks_dir
             class_output, seg_output = model(input_tensor)
             class_outputs.append(torch.softmax(class_output, dim=1).cpu().numpy())
             seg_outputs.append(seg_output.cpu().numpy())
-
-            if save_mc_masks_dir is not None:
-                seg_map_i = seg_output.cpu().numpy().squeeze()
-                seg_map_uint8 = (seg_map_i * 255).astype(np.uint8)
-                cv2.imwrite(os.path.join(save_mc_masks_dir, f"{filename_prefix}_mc_{i+1}.png"), seg_map_uint8)
 
         class_outputs = np.stack(class_outputs, axis=0)
         seg_outputs = np.stack(seg_outputs, axis=0)
@@ -164,19 +159,17 @@ def boundingbox_ellipsefit(rgb_image, contours):
             endpoints_sorted = sorted(endpoints, key=angle_from_center) # counter clockwise starting from right, top, left, bottom
 
             # Draw only ellipse on separate image
-            cv2.ellipse(ellipse_shape, ellipse, (0, 255, 0), 2) # getting the ellipse shape for the later purpose to blow and overlay on the real image resolution 
+            cv2.ellipse(ellipse_shape, ellipse, (0, 255, 0), 2) # getting the ellipse shape for the later purpose to blow and overlay on the real image resolution
 
-            # points on the ellipse 
+            # points on the ellipse - draw only the 4 endpoint markers
             for pt in endpoints_sorted:
                 x, y = int(pt[0]), int(pt[1])
-                cv2.circle(drawing, (x, y), 5, (0, 0, 255), -1)        # for the 720 image
+                cv2.drawMarker(drawing, (x, y), (0, 255, 255),
+                           markerType=cv2.MARKER_CROSS, markerSize=25, thickness=3, line_type=cv2.LINE_AA)
+                # cv2.circle(drawing, (x, y), 5, (0, 0, 255), -1)        # for the 720 image
                 cv2.circle(ellipse_shape, (x, y), 5, (0, 0, 255), -1)  # for the later purpose to blow and overlay on the real image resolution
 
-
-            # Draw ellipse and axes on full drawing for the 720 image
-            cv2.ellipse(drawing, ellipse, (0, 255, 255), 2)
-            cv2.line(drawing, (int(pt1_major[0]), int(pt1_major[1])), (int(pt2_major[0]), int(pt2_major[1])), (0, 255, 0), 1) # green for the major axis 
-            cv2.line(drawing, (int(pt1_minor[0]), int(pt1_minor[1])), (int(pt2_minor[0]), int(pt2_minor[1])), (255, 0, 0), 1) # blue for the minor axis 
+            # Ellipse and axis lines removed - only endpoint markers are drawn 
 
     return drawing, ellipse_shape, ellipse, endpoints_sorted
 
@@ -201,55 +194,138 @@ def extremafit_2pts(rgb_image, contours, binary_mask):
     return drawing, np.zeros_like(rgb_image), endpoints_sorted, skeleton_overlay
 
 
+def draw_arrowhead_markers(rgb_image, binary_mask):
+    """Draw arrowheads pointing to the extrema points on the segmentation mask."""
+    drawing = rgb_image.copy()
+
+    # Find skeleton
+    skeleton = skeletonize(binary_mask)
+    skeleton_uint8 = (skeleton.astype(np.uint8) * 255)
+
+    coords = cv2.findNonZero(skeleton_uint8)
+    if coords is None:
+        return drawing
+
+    # Find extrema points
+    leftmost = tuple(coords[coords[:,:,0].argmin()][0])
+    rightmost = tuple(coords[coords[:,:,0].argmax()][0])
+    topmost = tuple(coords[coords[:,:,1].argmin()][0])
+    bottommost = tuple(coords[coords[:,:,1].argmax()][0])
+
+    # Calculate center of mass for arrow origins
+    M = cv2.moments(binary_mask)
+    if M["m00"] != 0:
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+    else:
+        h, w = binary_mask.shape
+        cx, cy = w // 2, h // 2
+
+    # Draw arrows from center pointing to extrema
+    arrow_color = (0, 255, 0)  # Green arrows
+    thickness = 3
+    tip_length = 0.3
+
+    cv2.arrowedLine(drawing, (cx, cy), rightmost, arrow_color, thickness, tipLength=tip_length)
+    cv2.arrowedLine(drawing, (cx, cy), leftmost, arrow_color, thickness, tipLength=tip_length)
+    cv2.arrowedLine(drawing, (cx, cy), topmost, arrow_color, thickness, tipLength=tip_length)
+    cv2.arrowedLine(drawing, (cx, cy), bottommost, arrow_color, thickness, tipLength=tip_length)
+
+    # Draw center point
+    cv2.circle(drawing, (cx, cy), 5, (255, 0, 0), -1)
+
+    return drawing
+
+
 # ---------------- PROCESS IMAGE ----------------
-def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, shape_dir, skeleton_overlay_dir, mc_masks_dir):
+def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, measurement_type):
     filename = os.path.basename(image_path)
     filename_noext = os.path.splitext(filename)[0]
+    file_ext = os.path.splitext(filename)[1]
 
     predicted_class, class_probs, seg_map, resized_gray, class_uncert, seg_uncert = run_inference(
-        image_path, monte_carlo=True, n_samples=10,
-        save_mc_masks_dir=mc_masks_dir, filename_prefix=filename_noext
+        image_path, monte_carlo=True, n_samples=10
     )
 
-    print(f"\nImage: {filename}")
-    print("Predicted Class:", predicted_class)
-    print("Class Confidence:", np.round(class_probs[predicted_class], 4))
-    if class_uncert is not None:
-        print("Class Uncertainty:", float(class_uncert[predicted_class]))
+    # Calculate segmentation metrics
+    seg_confidence = float(seg_map[seg_map >= 0.1].mean()) if np.sum(seg_map >= 0.1) > 0 else 0.0
+    seg_uncertainty_mean = float(np.mean(seg_uncert)) if seg_uncert is not None else 0.0
 
+    # Get classification metrics
+    class_confidence = float(class_probs[predicted_class])
+    class_uncertainty_val = float(class_uncert[predicted_class]) if class_uncert is not None else 0.0
+
+    # Print all metrics
+    print(f"\n{'='*60}")
+    print(f"Image: {filename}")
+    print(f"{'='*60}")
+    print(f"CLASSIFICATION:")
+    print(f"  Predicted Class: {predicted_class}")
+    print(f"  Class Confidence: {class_confidence:.4f}")
+    print(f"  Class Uncertainty: {class_uncertainty_val:.6f}")
+    print(f"\nSEGMENTATION:")
+    print(f"  Segmentation Confidence: {seg_confidence:.4f}")
+    print(f"  Segmentation Uncertainty: {seg_uncertainty_mean:.6f}")
+    print(f"{'='*60}\n")
+
+    # Create filename with segmentation scores
+    scored_filename = f"{filename_noext}_segconf{seg_confidence:.4f}_segunc{seg_uncertainty_mean:.6f}{file_ext}"
+
+    # Read original image for overlays
     image_rgb, _ = preprocess_image_rgb(image_path)
+    OG_image = cv2.imread(image_path)
+    OG_Shape = OG_image.shape
+
+    # Create colormap overlay like infer_score2.py
+    seg_output_viz = (np.expand_dims(seg_map, -1) * 255).astype(np.uint8)
+    seg_output_viz = np.stack((seg_output_viz.squeeze(),) * 3, axis=-1)
+    mask_color = cv2.resize(seg_output_viz, (OG_Shape[1], OG_Shape[0]))
+    mask_color = cv2.applyColorMap(mask_color, cv2.COLORMAP_JET)
+    colormap_overlay = cv2.addWeighted(OG_image, 0.7, mask_color, 0.3, 0)
+    cv2.imwrite(os.path.join(colormap_overlay_dir, scored_filename), colormap_overlay)
+
     scaled_contours, contour_overlay = scaling_contour(image_rgb, seg_map)
-    cv2.imwrite(os.path.join(contour_dir, filename), contour_overlay)
+    cv2.imwrite(os.path.join(contour_dir, scored_filename), contour_overlay)
 
     mask_overlay, overlay, binary_mask = scaled_overlay(image_rgb, scaled_contours)
-    cv2.imwrite(os.path.join(mask_overlay_dir, filename), mask_overlay)
-    
-    drawing, shape, endpoints_sorted, skeleton_overlay = boundingbox_ellipsefit(image_rgb, scaled_contours)
-    drawing, shape, endpoints_sorted, skeleton_overlay = extremafit_2pts(image_rgb, scaled_contours, binary_mask)
-    print("Endpoints:", endpoints_sorted)
-    cv2.imwrite(os.path.join(drawing_dir, filename), drawing)
-    cv2.imwrite(os.path.join(shape_dir, filename), shape)
-    cv2.imwrite(os.path.join(skeleton_overlay_dir, filename), skeleton_overlay)
+    cv2.imwrite(os.path.join(mask_overlay_dir, scored_filename), mask_overlay)
+
+    # Use different fitting functions based on measurement type
+    if measurement_type in ["bpd", "ac"]:
+        drawing, shape, ellipse, endpoints_sorted = boundingbox_ellipsefit(image_rgb, scaled_contours)
+        skeleton_overlay = np.zeros_like(image_rgb)  # No skeleton overlay for ellipse fit
+    elif measurement_type == "fl":
+        drawing, shape, endpoints_sorted, skeleton_overlay = extremafit_2pts(image_rgb, scaled_contours, binary_mask)
+    else:
+        print(f"Warning: Unknown measurement type '{measurement_type}', using extremafit_2pts as default")
+        drawing, shape, endpoints_sorted, skeleton_overlay = extremafit_2pts(image_rgb, scaled_contours, binary_mask)
+
+    print(f"Endpoints: {endpoints_sorted}")
+    cv2.imwrite(os.path.join(drawing_dir, scored_filename), drawing)
+    cv2.imwrite(os.path.join(skeleton_overlay_dir, scored_filename), skeleton_overlay)
 
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
-    input_folder = "/home/htic/vasanth/bio_seg/data_parsed/bpd"
-    output_base = "/home/htic/vasanth/bio_seg/outputs/fetalnet/bpd_fullinfer"
+    input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/bpd"
+    output_base = "out"
     os.makedirs(output_base, exist_ok=True)
+
+    # Extract measurement type from input folder path
+    measurement_type = os.path.basename(input_folder.rstrip("/")).lower()
+    print(f"Detected measurement type: {measurement_type}")
 
     contour_dir = os.path.join(output_base, "contour_overlay")
     mask_overlay_dir = os.path.join(output_base, "mask_overlay")
     drawing_dir = os.path.join(output_base, "drawing")
-    shape_dir = os.path.join(output_base, "shape")
     skeleton_overlay_dir = os.path.join(output_base, "skeleton")
-    mc_masks_dir = os.path.join(output_base, "mc_masks")
+    colormap_overlay_dir = os.path.join(output_base, "colormap_overlay")
 
-    for p in [contour_dir, mask_overlay_dir, drawing_dir, shape_dir, skeleton_overlay_dir, mc_masks_dir]:
+    for p in [contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir]:
         os.makedirs(p, exist_ok=True)
 
     valid_exts = (".png", ".jpg", ".jpeg", ".bmp")
     image_paths = sorted([os.path.join(input_folder, f) for f in os.listdir(input_folder) if f.lower().endswith(valid_exts)])
 
     for img_path in tqdm(image_paths, desc="Processing images"):
-        process_image(img_path, contour_dir, mask_overlay_dir, drawing_dir, shape_dir, skeleton_overlay_dir, mc_masks_dir)
+        process_image(img_path, contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, measurement_type)
