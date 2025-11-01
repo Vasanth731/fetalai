@@ -123,6 +123,7 @@ def boundingbox_ellipsefit(rgb_image, contours):
     # height, width, channel = overlay.shape[:3]
     drawing = rgb_image.copy()
     ellipse_shape = np.zeros_like(rgb_image)  # Black image, same size
+    ellipse_overlay = rgb_image.copy()  # Overlay for ellipse and axes on original image
 
     rows = []
     ellipse = None
@@ -149,7 +150,7 @@ def boundingbox_ellipsefit(rgb_image, contours):
             pt2_major = (round(xc - dx_major, 2), round(yc - dy_major, 2))
             dx_minor = (minor / 2) * -np.sin(theta)
             dy_minor = (minor / 2) * np.cos(theta)
-            pt1_minor = (round(xc + dx_minor, 2), round(yc + dy_minor, 2)) 
+            pt1_minor = (round(xc + dx_minor, 2), round(yc + dy_minor, 2))
             pt2_minor = (round(xc - dx_minor, 2), round(yc - dy_minor, 2))
 
             # Sort and draw endpoints (optional markers)
@@ -161,6 +162,15 @@ def boundingbox_ellipsefit(rgb_image, contours):
             # Draw only ellipse on separate image
             cv2.ellipse(ellipse_shape, ellipse, (0, 255, 0), 2) # getting the ellipse shape for the later purpose to blow and overlay on the real image resolution
 
+            # Draw ellipse on overlay
+            cv2.ellipse(ellipse_overlay, ellipse, (0, 255, 0), 2)
+
+            # Draw major and minor axis lines on overlay
+            cv2.line(ellipse_overlay, (int(pt1_major[0]), int(pt1_major[1])),
+                    (int(pt2_major[0]), int(pt2_major[1])), (255, 0, 0), 2)  # Blue for major axis
+            cv2.line(ellipse_overlay, (int(pt1_minor[0]), int(pt1_minor[1])),
+                    (int(pt2_minor[0]), int(pt2_minor[1])), (0, 0, 255), 2)  # Red for minor axis
+
             # points on the ellipse - draw only the 4 endpoint markers
             for pt in endpoints_sorted:
                 x, y = int(pt[0]), int(pt[1])
@@ -169,14 +179,25 @@ def boundingbox_ellipsefit(rgb_image, contours):
                 # cv2.circle(drawing, (x, y), 5, (0, 0, 255), -1)        # for the 720 image
                 cv2.circle(ellipse_shape, (x, y), 5, (0, 0, 255), -1)  # for the later purpose to blow and overlay on the real image resolution
 
-            # Ellipse and axis lines removed - only endpoint markers are drawn 
+            # Ellipse and axis lines removed - only endpoint markers are drawn
 
-    return drawing, ellipse_shape, ellipse, endpoints_sorted
+    return drawing, ellipse_shape, ellipse, endpoints_sorted, ellipse_overlay
 
 
 def extremafit_2pts(rgb_image, contours, binary_mask):
     drawing = rgb_image.copy()
-    skeleton = skeletonize(binary_mask)
+
+    # Find the largest contour
+    if len(contours) == 0:
+        return drawing, np.zeros_like(rgb_image), [], rgb_image.copy()
+
+    largest_contour = max(contours, key=cv2.contourArea)
+
+    # Create binary mask from only the largest contour
+    largest_binary_mask = np.zeros(rgb_image.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(largest_binary_mask, [largest_contour], 255)
+
+    skeleton = skeletonize(largest_binary_mask)
     skeleton_uint8 = (skeleton.astype(np.uint8) * 255)
     skeleton_overlay = cv2.addWeighted(rgb_image, 0.7, cv2.cvtColor(skeleton_uint8, cv2.COLOR_GRAY2BGR), 0.3, 0)
 
@@ -238,7 +259,7 @@ def draw_arrowhead_markers(rgb_image, binary_mask):
 
 
 # ---------------- PROCESS IMAGE ----------------
-def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, measurement_type):
+def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir, measurement_type):
     filename = os.path.basename(image_path)
     filename_noext = os.path.splitext(filename)[0]
     file_ext = os.path.splitext(filename)[1]
@@ -292,8 +313,10 @@ def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skelet
 
     # Use different fitting functions based on measurement type
     if measurement_type in ["bpd", "ac"]:
-        drawing, shape, ellipse, endpoints_sorted = boundingbox_ellipsefit(image_rgb, scaled_contours)
+        drawing, shape, ellipse, endpoints_sorted, ellipse_overlay = boundingbox_ellipsefit(image_rgb, scaled_contours)
         skeleton_overlay = np.zeros_like(image_rgb)  # No skeleton overlay for ellipse fit
+        # Save ellipse overlay with major and minor axis lines
+        cv2.imwrite(os.path.join(ellipse_axis_overlay_dir, scored_filename), ellipse_overlay)
     elif measurement_type == "fl":
         drawing, shape, endpoints_sorted, skeleton_overlay = extremafit_2pts(image_rgb, scaled_contours, binary_mask)
     else:
@@ -307,8 +330,8 @@ def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skelet
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
-    input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/fl"
-    output_base = "outfl"
+    input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/bpd"
+    output_base = "out2"
     os.makedirs(output_base, exist_ok=True)
 
     # Extract measurement type from input folder path
@@ -320,12 +343,13 @@ if __name__ == "__main__":
     drawing_dir = os.path.join(output_base, "drawing")
     skeleton_overlay_dir = os.path.join(output_base, "skeleton")
     colormap_overlay_dir = os.path.join(output_base, "colormap_overlay")
+    ellipse_axis_overlay_dir = os.path.join(output_base, "ellipse_axis_overlay")
 
-    for p in [contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir]:
+    for p in [contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir]:
         os.makedirs(p, exist_ok=True)
 
     valid_exts = (".png", ".jpg", ".jpeg", ".bmp")
     image_paths = sorted([os.path.join(input_folder, f) for f in os.listdir(input_folder) if f.lower().endswith(valid_exts)])
 
     for img_path in tqdm(image_paths, desc="Processing images"):
-        process_image(img_path, contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, measurement_type)
+        process_image(img_path, contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir, measurement_type)
