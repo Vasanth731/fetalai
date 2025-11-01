@@ -14,10 +14,10 @@ from skimage.morphology import skeletonize
 
 # ---------------- CONFIG ----------------
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CHECKPOINT_PATH = "weights/fl.pth.tar"
+CHECKPOINT_PATH = "/home/htic/vasanth/fetalai_project/weights/ac.pth.tar"
 IMAGE_HEIGHT = 160
 IMAGE_WIDTH = 240
-INPUT_DIR = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/fl"
+INPUT_DIR = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/ac"
 OUTPUT_DIR = "out"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -112,6 +112,17 @@ def boundingbox_ellipsefit(rgb_image, contour):
             (0, 255, 0),
             2,
         )
+
+                # --- Draw major (left-right) and minor (top-bottom) axes ---
+        pt1_major_int = (int(round(pt1_major[0])), int(round(pt1_major[1])))
+        pt2_major_int = (int(round(pt2_major[0])), int(round(pt2_major[1])))
+        pt1_minor_int = (int(round(pt1_minor[0])), int(round(pt1_minor[1])))
+        pt2_minor_int = (int(round(pt2_minor[0])), int(round(pt2_minor[1])))
+
+        # Draw on ellipse image (for visualization of the fitted shape)
+        cv2.line(ellipse_img, pt1_major_int, pt2_major_int, (255, 0, 0), 2)   # major axis (blue)
+        cv2.line(ellipse_img, pt1_minor_int, pt2_minor_int, (0, 0, 255), 2)  
+
         for pt in endpoints_sorted:
             x, y = int(round(pt[0])), int(round(pt[1]))
             cv2.drawMarker(drawing, (x, y), (0, 255, 255),

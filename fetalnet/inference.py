@@ -307,8 +307,8 @@ def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skelet
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
-    input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/bpd"
-    output_base = "out"
+    input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/fl"
+    output_base = "outfl"
     os.makedirs(output_base, exist_ok=True)
 
     # Extract measurement type from input folder path
