@@ -17,8 +17,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CHECKPOINT_PATH = "weights/fl.pth.tar"
 IMAGE_HEIGHT = 160
 IMAGE_WIDTH = 240
-INPUT_DIR = "/home/htic/fetalai_data/vasanth/new_parsed_dataset/03_Femur_Length"
-OUTPUT_DIR = "/home/htic/vasanth/bio_seg/outputs/unet_seg/new_parsed_data/fl"
+INPUT_DIR = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/fl"
+OUTPUT_DIR = "out"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -161,12 +161,13 @@ def extremafit_2pts(rgb_image, contour, binary_mask):
 
 
 # ---------------- INFERENCE FUNCTION ----------------
-def infer_single_image(image_path, model, threshold=0.5, n_mc_samples=10):
+def infer_single_image(image_path, model, weight_type="bpd", threshold=0.5, n_mc_samples=10):
     """
     Perform inference with Monte Carlo dropout for uncertainty estimation
     Args:
         image_path: Path to input image
         model: The UNET model with dropout
+        weight_type: Type of weight being used ('ac', 'bpd', or 'fl')
         threshold: Threshold for binary mask generation
         n_mc_samples: Number of Monte Carlo samples for uncertainty estimation
     """
@@ -230,9 +231,6 @@ def infer_single_image(image_path, model, threshold=0.5, n_mc_samples=10):
 
     largest = max(contours, key=cv2.contourArea)
 
-    # Generate arrowhead markings (extrema points) and other visualizations
-    extrema_img, line_mask, extrema_points, skeleton_overlay = extremafit_2pts(image, largest, mask_0_255)
-
     # Create contour visualization
     contour_img = image.copy()
     cv2.drawContours(contour_img, [largest], -1, (0, 255, 255), 3)
@@ -242,18 +240,54 @@ def infer_single_image(image_path, model, threshold=0.5, n_mc_samples=10):
     conf_heatmap_color = cv2.applyColorMap(conf_heatmap, cv2.COLORMAP_JET)
     overlay_bgr = cv2.addWeighted(cv2.cvtColor(image, cv2.COLOR_RGB2BGR), 0.7, conf_heatmap_color, 0.3, 0)
 
-    # ---------------- SAVE ALL OUTPUTS ----------------
-    cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_mask.png"), mask_0_255)
-    cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_overlay.png"), overlay_bgr)
-    cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_contour.png"), cv2.cvtColor(contour_img, cv2.COLOR_RGB2BGR))
-    cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_arrowhead.png"), cv2.cvtColor(extrema_img, cv2.COLOR_RGB2BGR))
-    cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_line_mask.png"), line_mask)
+    # Conditionally apply the appropriate fitting function based on weight type
+    if weight_type.lower() in ['ac', 'bpd']:
+        # Use ellipse fitting for AC and BPD
+        print(f" → Using boundingbox_ellipsefit for weight type: {weight_type}")
+        ellipse_img, drawing, ellipse_params, endpoints_sorted = boundingbox_ellipsefit(image, largest)
+
+        # Save outputs specific to ellipse fitting
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_mask.png"), mask_0_255)
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_overlay.png"), overlay_bgr)
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_contour.png"), cv2.cvtColor(contour_img, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_ellipse.png"), cv2.cvtColor(ellipse_img, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_drawing.png"), cv2.cvtColor(drawing, cv2.COLOR_RGB2BGR))
+
+        # Save ellipse parameters if available
+        if ellipse_params:
+            params_path = os.path.join(OUTPUT_DIR, f"{filename_base}_ellipse_params.json")
+            with open(params_path, 'w') as f:
+                json.dump(ellipse_params, f, indent=2)
+
+    elif weight_type.lower() == 'fl':
+        # Use extrema fitting for FL
+        print(f" → Using extremafit_2pts for weight type: {weight_type}")
+        extrema_img, line_mask, extrema_points, skeleton_overlay = extremafit_2pts(image, largest, mask_0_255)
+
+        # Save outputs specific to extrema fitting
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_mask.png"), mask_0_255)
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_overlay.png"), overlay_bgr)
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_contour.png"), cv2.cvtColor(contour_img, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_arrowhead.png"), cv2.cvtColor(extrema_img, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_line_mask.png"), line_mask)
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_skeleton.png"), cv2.cvtColor(skeleton_overlay, cv2.COLOR_RGB2BGR))
+    else:
+        print(f" → Warning: Unknown weight type '{weight_type}'. Skipping measurement fitting.")
+        # Just save basic outputs
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_mask.png"), mask_0_255)
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_overlay.png"), overlay_bgr)
+        cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_contour.png"), cv2.cvtColor(contour_img, cv2.COLOR_RGB2BGR))
 
     print(f" → Saved all outputs (Conf: {seg_confidence:.4f}, Unc: {uncertainty_score:.4f})")
 
 
 # ---------------- MAIN ----------------
 def main():
+    # Extract weight type from checkpoint path (e.g., "weights/bpd.pth.tar" -> "bpd")
+    checkpoint_basename = os.path.basename(CHECKPOINT_PATH)
+    weight_type = checkpoint_basename.split('.')[0]  # Extract name before first dot
+    print(f"Detected weight type: {weight_type}")
+
     model = UNET(in_channels=3, out_channels=1, dropout_prob=0.5).to(DEVICE)
     load_checkpoint(torch.load(CHECKPOINT_PATH, map_location=DEVICE), model)
     model.eval()
@@ -263,7 +297,7 @@ def main():
 
     print(f"Found {len(image_files)} images in {INPUT_DIR}")
     for img_name in tqdm(image_files, desc="Running Inference"):
-        infer_single_image(os.path.join(INPUT_DIR, img_name), model)
+        infer_single_image(os.path.join(INPUT_DIR, img_name), model, weight_type=weight_type)
 
     print(f"\nAll outputs saved to: {OUTPUT_DIR}")
 
