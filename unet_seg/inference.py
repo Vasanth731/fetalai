@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import cv2
 import os
-from model import UNET
+from model_with_dropout import UNET
 from utils import load_checkpoint
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
@@ -21,6 +21,39 @@ INPUT_DIR = "/home/htic/fetalai_data/vasanth/new_parsed_dataset/03_Femur_Length"
 OUTPUT_DIR = "/home/htic/vasanth/bio_seg/outputs/unet_seg/new_parsed_data/fl"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ---------------- MONTE CARLO DROPOUT ----------------
+def enable_dropout(model):
+    """Enable dropout layers during inference for Monte Carlo dropout"""
+    for module in model.modules():
+        if isinstance(module, torch.nn.Dropout2d) or isinstance(module, torch.nn.Dropout):
+            module.train()
+
+def monte_carlo_inference(model, x, n_samples=10):
+    """
+    Perform Monte Carlo dropout inference
+    Args:
+        model: The neural network model
+        x: Input tensor
+        n_samples: Number of Monte Carlo samples
+    Returns:
+        mean_pred: Mean prediction across all samples
+        std_pred: Standard deviation (uncertainty) across all samples
+    """
+    model.eval()  # Set model to eval mode first
+    enable_dropout(model)  # Then enable dropout layers
+
+    predictions = []
+    with torch.no_grad():
+        for _ in range(n_samples):
+            pred = torch.sigmoid(model(x))
+            predictions.append(pred.cpu().numpy())
+
+    predictions = np.array(predictions)  # Shape: (n_samples, 1, H, W)
+    mean_pred = np.mean(predictions, axis=0)  # Mean across samples
+    std_pred = np.std(predictions, axis=0)    # Std deviation (uncertainty)
+
+    return mean_pred, std_pred
 
 # ---------------- TRANSFORM ----------------
 val_transform = A.Compose([
@@ -128,34 +161,62 @@ def extremafit_2pts(rgb_image, contour, binary_mask):
 
 
 # ---------------- INFERENCE FUNCTION ----------------
-def infer_single_image(image_path, model, threshold=0.5):
+def infer_single_image(image_path, model, threshold=0.5, n_mc_samples=10):
+    """
+    Perform inference with Monte Carlo dropout for uncertainty estimation
+    Args:
+        image_path: Path to input image
+        model: The UNET model with dropout
+        threshold: Threshold for binary mask generation
+        n_mc_samples: Number of Monte Carlo samples for uncertainty estimation
+    """
     image = np.array(Image.open(image_path).convert("RGB"))
     augmented = val_transform(image=image)
     x = augmented["image"].unsqueeze(0).to(DEVICE)
 
-    with torch.no_grad():
-        preds = torch.sigmoid(model(x))
-        avg_prob = preds.mean().item()
+    # Perform Monte Carlo dropout inference
+    mean_pred, std_pred = monte_carlo_inference(model, x, n_samples=n_mc_samples)
 
-    print(f"\nImage: {os.path.basename(image_path)} → Avg Conf: {avg_prob:.4f}")
+    # Extract mean and std predictions
+    conf_mask = mean_pred.squeeze()  # Shape: (H, W)
+    uncertainty_mask = std_pred.squeeze()  # Shape: (H, W)
 
-    conf_mask = preds.squeeze().cpu().numpy()
+    # Create binary mask
     binary_mask = (conf_mask > threshold).astype(np.uint8)
+
+    # Resize to original image dimensions
     h, w = image.shape[:2]
     conf_mask_resized = cv2.resize(conf_mask, (w, h), interpolation=cv2.INTER_LINEAR)
+    uncertainty_mask_resized = cv2.resize(uncertainty_mask, (w, h), interpolation=cv2.INTER_LINEAR)
     binary_mask_resized = cv2.resize(binary_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
     mask_0_255 = (binary_mask_resized * 255).astype(np.uint8)
 
+    # Calculate segmentation confidence score (mean probability in segmented region)
+    if binary_mask_resized.sum() > 0:
+        seg_confidence = conf_mask_resized[binary_mask_resized > 0].mean()
+    else:
+        seg_confidence = 0.0
+
+    # Calculate uncertainty score (mean std deviation in segmented region)
+    if binary_mask_resized.sum() > 0:
+        uncertainty_score = uncertainty_mask_resized[binary_mask_resized > 0].mean()
+    else:
+        uncertainty_score = 0.0
+
+    print(f"\nImage: {os.path.basename(image_path)}")
+    print(f"  → Segmentation Confidence: {seg_confidence:.4f}")
+    print(f"  → Uncertainty Score: {uncertainty_score:.4f}")
+
+    # Find contours
     contours_info = cv2.findContours(mask_0_255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if len(contours_info) == 3:
         _, contours, _ = contours_info
     else:
         contours, _ = contours_info
 
-    # 🔹 Add confidence to filename
+    # Create filename with both confidence and uncertainty scores
     base = os.path.splitext(os.path.basename(image_path))[0]
-    conf_str = f"{avg_prob:.4f}"
-    filename_base = f"{base}_conf-{conf_str}"
+    filename_base = f"{base}_conf-{seg_confidence:.4f}_unc-{uncertainty_score:.4f}"
 
     if len(contours) == 0:
         print(" → No contours found.")
@@ -168,10 +229,15 @@ def infer_single_image(image_path, model, threshold=0.5):
         return
 
     largest = max(contours, key=cv2.contourArea)
-    # line_mask, extrema_img, ellipse_params, endpoints_sorted = boundingbox_ellipsefit(image, largest)
+
+    # Generate arrowhead markings (extrema points) and other visualizations
     extrema_img, line_mask, extrema_points, skeleton_overlay = extremafit_2pts(image, largest, mask_0_255)
+
+    # Create contour visualization
     contour_img = image.copy()
     cv2.drawContours(contour_img, [largest], -1, (0, 255, 255), 3)
+
+    # Create confidence heatmap overlay
     conf_heatmap = (conf_mask_resized * 255).astype(np.uint8)
     conf_heatmap_color = cv2.applyColorMap(conf_heatmap, cv2.COLORMAP_JET)
     overlay_bgr = cv2.addWeighted(cv2.cvtColor(image, cv2.COLOR_RGB2BGR), 0.7, conf_heatmap_color, 0.3, 0)
@@ -180,11 +246,10 @@ def infer_single_image(image_path, model, threshold=0.5):
     cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_mask.png"), mask_0_255)
     cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_overlay.png"), overlay_bgr)
     cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_contour.png"), cv2.cvtColor(contour_img, cv2.COLOR_RGB2BGR))
-    cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_extrema.png"), cv2.cvtColor(extrema_img, cv2.COLOR_RGB2BGR))
-    # cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_skeleton_overlay.png"), cv2.cvtColor(skeleton_overlay, cv2.COLOR_RGB2BGR))
+    cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_arrowhead.png"), cv2.cvtColor(extrema_img, cv2.COLOR_RGB2BGR))
     cv2.imwrite(os.path.join(OUTPUT_DIR, f"{filename_base}_line_mask.png"), line_mask)
 
-    print(f" → Saved outputs for {base} (Conf: {avg_prob:.4f})")
+    print(f" → Saved all outputs (Conf: {seg_confidence:.4f}, Unc: {uncertainty_score:.4f})")
 
 
 # ---------------- MAIN ----------------
