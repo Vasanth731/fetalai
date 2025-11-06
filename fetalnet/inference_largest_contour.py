@@ -15,9 +15,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------------- LOAD MODEL ----------------
 model = YNet(input_channels=input_channels, output_channels=output_channels, n_class=n_class)
-# model.load_state_dict(torch.load("/home/htic/vasanth/fetalai_project/weights/fuvai_weights.pt", map_location=device))
-model.load_state_dict(torch.load("output/best_model.pt", map_location=device))
-
+model.load_state_dict(torch.load("/home/htic/vasanth/fetalai_project/weights/fuvai_weights.pt", map_location=device))
 model = model.to(device)
 model.eval()  # start in eval mode
 
@@ -341,8 +339,10 @@ def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skelet
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
-    input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/01_Abdominal_Circumference"
-    output_base = "outac"
+
+    input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/03_Femur_Length"
+    output_base = "outfl"
+
     os.makedirs(output_base, exist_ok=True)
 
     # Extract measurement type from input folder path
