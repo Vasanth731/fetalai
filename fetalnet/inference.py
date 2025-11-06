@@ -120,6 +120,7 @@ def boundingbox_ellipsefit(rgb_image, contours):
     if rgb_image.shape[-1] == 4:
         rgb_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGBA2RGB)
 
+
     # height, width, channel = overlay.shape[:3]
     drawing = rgb_image.copy()
     ellipse_shape = np.zeros_like(rgb_image)  # Black image, same size
@@ -330,8 +331,8 @@ def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skelet
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
-    input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/bpd"
-    output_base = "out2"
+    input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/01_Abdominal_Circumference"
+    output_base = "outac_new"
     os.makedirs(output_base, exist_ok=True)
 
     # Extract measurement type from input folder path

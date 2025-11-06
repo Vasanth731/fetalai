@@ -14,10 +14,10 @@ from skimage.morphology import skeletonize
 
 # ---------------- CONFIG ----------------
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CHECKPOINT_PATH = "/home/htic/vasanth/fetalai_project/weights/ac.pth.tar"
+CHECKPOINT_PATH = "/home/htic/vasanth/fetalai_project/weights/fl.pth.tar"
 IMAGE_HEIGHT = 160
 IMAGE_WIDTH = 240
-INPUT_DIR = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/ac"
+INPUT_DIR = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/fl"
 OUTPUT_DIR = "out"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)

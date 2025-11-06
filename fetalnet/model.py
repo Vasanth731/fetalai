@@ -227,7 +227,7 @@ def _upsample_like(src, tar):
 
 
 class YNet(nn.Module):
-    """
+    """ 
     UNet class.
     """
 
