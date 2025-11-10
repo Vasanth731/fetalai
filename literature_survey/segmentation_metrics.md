@@ -40,7 +40,7 @@
 
 ## Additional Notes
 
-### Popular GitHub Repositories for Segmentation Metrics:
+### Popular Git Repos:
 
 1. **MISeval** (https://github.com/frankkramer-lab/miseval) - Comprehensive medical image segmentation evaluation library
    - Paper: Müller et al. "MISeval: a Metric Library for Medical Image Segmentation Evaluation" (2022)
@@ -57,7 +57,7 @@
 5. **TorchMetrics** (https://github.com/Lightning-AI/torchmetrics)
    - Lightning AI's comprehensive metrics library including segmentation metrics
 
-### Key Survey Papers:
+### Main Papers in this field:
 
 1. **Wang et al.** "Image segmentation evaluation: a survey of methods" - Artificial Intelligence Review (2020)
    - DOI: 10.1007/s10462-020-09830-9
@@ -79,7 +79,7 @@
 5. **Boundary-based metrics**: Boundary IoU, Boundary F-Measure
 6. **Task-specific metrics**: Panoptic Quality (for panoptic segmentation)
 
-### Implementation Considerations:
+### Useful for our use-case:
 
 - **For Medical Imaging**: Use DSC, IoU, HD95, and ASD as primary metrics
 - **For Natural Images**: Use mIoU and Pixel Accuracy as primary metrics

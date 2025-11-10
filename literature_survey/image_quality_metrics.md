@@ -75,7 +75,7 @@
 
 ---
 
-## Popular GitHub Repositories for Image Quality Metrics
+## Popular Git Repos
 
 ### 1. **PIQ (PyTorch Image Quality)**
 **Link:** https://github.com/photosynthesis-team/piq
@@ -116,7 +116,7 @@
 
 ---
 
-## Key Papers and Surveys
+## Main Papers in this field
 
 ### Comprehensive Reviews:
 1. **Wang & Bovik** "Modern Image Quality Assessment" - Synthesis Lectures on Image, Video, and Multimedia Processing (2006)
@@ -133,7 +133,7 @@
 
 ---
 
-## Metric Selection Guidelines
+## Useful for our use-case
 
 ### For Natural Images:
 - **Full-Reference:** SSIM, MS-SSIM, LPIPS (for perceptual similarity)
@@ -161,7 +161,7 @@
 
 ---
 
-## Important Considerations
+## Pros&Cons
 
 ### Full-Reference Metrics:
 **Strengths:**
@@ -199,7 +199,28 @@
 
 ---
 
-## Historical Timeline
+## Time Complexities
+
+### Fast Metrics (Real-time capable):
+- MSE, RMSE, PSNR
+- Simple SSIM implementations
+- BRISQUE (lightweight)
+
+### Medium Speed:
+- MS-SSIM
+- VIF
+- FSIM
+- NIQE
+
+### Slow Metrics:
+- LPIPS (requires deep network)
+- FID/KID (requires many samples)
+- PieAPP
+- DISTS
+
+---
+
+## Improvements
 
 - **1912** - Jaccard Index (adapted for images later)
 - **2002** - Universal Quality Index (UQI)
@@ -221,83 +242,3 @@
 - **2024** - CMMD
 
 ---
-
-## Computational Considerations
-
-### Fast Metrics (Real-time capable):
-- MSE, RMSE, PSNR
-- Simple SSIM implementations
-- BRISQUE (lightweight)
-
-### Medium Speed:
-- MS-SSIM
-- VIF
-- FSIM
-- NIQE
-
-### Slow Metrics:
-- LPIPS (requires deep network)
-- FID/KID (requires many samples)
-- PieAPP
-- DISTS
-
----
-
-## Programming Language Support
-
-### Python:
-- Most metrics available (PIQ, SEWAR, scikit-image, OpenCV)
-- Best support for deep learning metrics
-
-### MATLAB:
-- Built-in support for SSIM, PSNR, BRISQUE, NIQE, PIQE
-- Image Processing Toolbox provides most FR metrics
-
-### C/C++:
-- OpenCV provides PSNR, SSIM
-- VQMT provides fast implementations
-
-### Command Line:
-- FFmpeg for PSNR, SSIM, VMAF
-- SEWAR CLI tool
-
----
-
-## Citation Information
-
-When using these metrics in research, always cite the original papers. For example:
-
-**SSIM:**
-```
-@article{wang2004image,
-  title={Image quality assessment: from error visibility to structural similarity},
-  author={Wang, Zhou and Bovik, Alan C and Sheikh, Hamid R and Simoncelli, Eero P},
-  journal={IEEE transactions on image processing},
-  volume={13},
-  number={4},
-  pages={600--612},
-  year={2004}
-}
-```
-
-**FID:**
-```
-@inproceedings{heusel2017gans,
-  title={GANs trained by a two time-scale update rule converge to a local nash equilibrium},
-  author={Heusel, Martin and Ramsauer, Hubert and Unterthiner, Thomas and Nessler, Bernhard and Hochreiter, Sepp},
-  booktitle={Advances in neural information processing systems},
-  pages={6626--6637},
-  year={2017}
-}
-```
-
-**LPIPS:**
-```
-@inproceedings{zhang2018unreasonable,
-  title={The unreasonable effectiveness of deep features as a perceptual metric},
-  author={Zhang, Richard and Isola, Phillip and Efros, Alexei A and Shechtman, Eli and Wang, Oliver},
-  booktitle={Proceedings of the IEEE conference on computer vision and pattern recognition},
-  pages={586--595},
-  year={2018}
-}
-```
