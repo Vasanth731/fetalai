@@ -15,7 +15,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------------- LOAD MODEL ----------------
 model = YNet(input_channels=input_channels, output_channels=output_channels, n_class=n_class)
-model.load_state_dict(torch.load("/home/htic/vasanth/fetalai_project/weights/fuvai_weights.pt", map_location=device))
+# model.load_state_dict(torch.load("/home/htic/vasanth/fetalai_project/weights/fuvai_weights.pt", map_location=device))
+model.load_state_dict(torch.load("/home/htic/vasanth/fetalai_project/weights/fetalnet/finetuned_multicls/output/best_model.pt", map_location=device))
 model = model.to(device)
 model.eval()  # start in eval mode
 
