@@ -179,6 +179,7 @@ def get_dataloaders(root_folder, batch_size=4, num_workers=4, target_size=(224, 
 if __name__ == "__main__":
     # Test the dataloader
     root_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/retro/unet_dataset"
+    
 
     train_loader, val_loader = get_dataloaders(
         root_folder=root_folder,

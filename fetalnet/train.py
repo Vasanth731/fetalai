@@ -321,20 +321,20 @@ def train(args):
               f"Acc: {val_cls_acc:.4f}, IoU: {val_iou:.4f}")
         print(f"  LR: {optimizer.param_groups[0]['lr']:.6f}")
 
-        # Save checkpoint
-        checkpoint_path = output_dir / f"checkpoint_epoch_{epoch}.pt"
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-        }, checkpoint_path)
+        # # Save checkpoint
+        # checkpoint_path = output_dir / f"checkpoint_epoch_{epoch}.pt"
+        # torch.save({
+        #     'epoch': epoch,
+        #     'model_state_dict': model.state_dict(),
+        #     'optimizer_state_dict': optimizer.state_dict(),
+        #     'train_loss': train_loss,
+        #     'val_loss': val_loss,
+        # }, checkpoint_path)
 
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_model_path = output_dir / "best_model.pt"
+            best_model_path = output_dir / "best_model_precise.pt"
             torch.save(model.state_dict(), best_model_path)
             print(f"  ✓ Best model saved! (val_loss: {val_loss:.4f})")
 

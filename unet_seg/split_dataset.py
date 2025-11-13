@@ -4,8 +4,11 @@ import random
 from tqdm import tqdm
 
 # ---------------- CONFIG ----------------
-main_folder = "/home/htic/fetalai_data/preprocessed/mediscan-seg/FL"  # Change this
-output_folder = "/home/htic/fetalai_data/vasanth/unet_dataset/FL"  # Change this
+# main_folder = "/home/htic/fetalai_data/preprocessed/mediscan-seg/AC"  # Change this
+# output_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/retro/unet_dataset/AC"  # Change this
+
+main_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/retro/unet_dataset_precise/BPD"  # Change this
+output_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/retro/unet_dataset_precise_split/BPD"  # Change this
 
 
 train_ratio = 0.7
