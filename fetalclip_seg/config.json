@@ -1,0 +1,16 @@
+{
+  "paths": {
+    "dir_data": "./data",
+    "path_train_val_split": "/home/htic/Documents/FetalCLIP/segmentation/train_val_split.json",
+    "path_test_split": "/home/htic/Documents/FetalCLIP/segmentation/test_id.json",
+    "dir_preprocessed": "preprocessed_data",
+    "dir_experiment_logs": "experiment_logs",
+    "path_fetalclip_config": "/home/htic/anu/FetalCLIP/FetalCLIP_config.json",
+    "path_fetalclip_weight": "/home/htic/anu/FetalCLIP/FetalCLIP_weights.pt"
+  },
+  "params": {
+    "num_workers": 4,
+    "batch_size": 8,
+    "max_epochs": 20
+  }
+}
