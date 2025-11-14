@@ -147,8 +147,8 @@ def verify_relabeling(output_path, categories=None, mask_folder='masks'):
 
 if __name__ == "__main__":
     # Set your paths here
-    BASE_PATH = "unet_dataset_precise_split"
-    OUTPUT_PATH = "unet_dataset_precise_split_relabeled"
+    BASE_PATH = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/retro/unet_dataset_precise_split"
+    OUTPUT_PATH = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/retro/fetalclip_dataset"
 
     # Define the mapping (category_name -> pixel_value)
     CATEGORIES = {
