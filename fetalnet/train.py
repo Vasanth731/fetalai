@@ -334,7 +334,7 @@ def train(args):
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_model_path = output_dir / "best_model_precise.pt"
+            best_model_path = output_dir / "best_model_precise_3cls.pt"
             torch.save(model.state_dict(), best_model_path)
             print(f"  ✓ Best model saved! (val_loss: {val_loss:.4f})")
 

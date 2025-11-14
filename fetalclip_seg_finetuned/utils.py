@@ -49,8 +49,13 @@ with open('test_id.json', 'r') as file:
     LIST_TEST_PID = json.load(file)
 LIST_TEST_PID = list(LIST_TEST_PID.keys())
 
-LIST_CLASSES = ['head']
-NUM_CLASSES  = len(LIST_CLASSES)
+# MULTICLASS SEGMENTATION CONFIGURATION
+# Update these values for your specific task:
+# - LIST_CLASSES: Names of your classes (e.g., ['background', 'head', 'body', 'limbs'])
+# - NUM_CLASSES: Total number of classes including background
+# Note: If background is class 0, include it in the count
+LIST_CLASSES = ['head']  # UPDATE THIS: Add all your class names
+NUM_CLASSES  = len(LIST_CLASSES)  # UPDATE THIS if needed: Total number of output classes
 
 os.makedirs(DIR_SAVE_CSV_EXP, exist_ok=True)
 
@@ -96,15 +101,21 @@ class DatasetHC18(torch.utils.data.Dataset):
 
         img = data['img']
         ann = data['ann']
-        
+
         img = Image.fromarray(img)
         ann = Image.fromarray(ann)
 
         img = self.preprocess_img(img)
         ann = self.preprocess_mask(ann)
 
-        assert ann.shape[0] == NUM_CLASSES
-        
+        # For multiclass segmentation: ann should be (H, W) with class indices
+        # Remove the channel dimension added by ToTensor if present
+        if ann.dim() == 3 and ann.shape[0] == 1:
+            ann = ann.squeeze(0)  # (1, H, W) -> (H, W)
+
+        # Convert to long tensor for cross-entropy loss
+        ann = ann.long()
+
         if self.dict_embeddings:
             return img, ann, embs
         else:
@@ -116,7 +127,13 @@ class LitModel(pl.LightningModule):
         super().__init__()
         self.num_classes = num_classes
         self.model = UNETR(transformer_width, num_classes, input_dim, init_filters)
-        self.criterion = smp.losses.DiceLoss(mode='multilabel', from_logits=True)
+        # MULTICLASS: Use 'multiclass' mode for multiclass segmentation
+        # For binary segmentation (NUM_CLASSES=1), use mode='binary'
+        # For multiclass segmentation (NUM_CLASSES>1), use mode='multiclass'
+        if num_classes == 1:
+            self.criterion = smp.losses.DiceLoss(mode='binary', from_logits=True)
+        else:
+            self.criterion = smp.losses.DiceLoss(mode='multiclass', from_logits=True)
         self.validation_step_outputs = []
         self.validation_step_inputs = []
     
@@ -128,10 +145,16 @@ class LitModel(pl.LightningModule):
         x, y, embs = batch
 
         pred = self.forward([x, *embs])
-        
+
         loss = self.criterion(pred, y)
-        
-        dsc = smp_utils.metrics.Fscore(activation='sigmoid')(pred, y)
+
+        # MULTICLASS: Use appropriate activation based on number of classes
+        if self.num_classes == 1:
+            activation = 'sigmoid'
+        else:
+            activation = 'softmax2d'  # For multiclass segmentation
+
+        dsc = smp_utils.metrics.Fscore(activation=activation)(pred, y)
 
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log('train_dsc', dsc, on_step=True, on_epoch=True, prog_bar=True)
@@ -154,10 +177,32 @@ class LitModel(pl.LightningModule):
         os.makedirs(save_dir, exist_ok=True)
         B = orig_images.size(0)
         alpha=0.5
+
+        # MULTICLASS: Define colormap for different classes
+        # Each class gets a unique color (RGB values)
+        class_colors = [
+            [0, 0, 0],      # Class 0: Black (background)
+            [1, 0, 0],      # Class 1: Red
+            [0, 1, 0],      # Class 2: Green
+            [0, 0, 1],      # Class 3: Blue
+            [1, 1, 0],      # Class 4: Yellow
+            [1, 0, 1],      # Class 5: Magenta
+            [0, 1, 1],      # Class 6: Cyan
+            [1, 0.5, 0],    # Class 7: Orange
+            [0.5, 0, 1],    # Class 8: Purple
+            [0, 0.5, 0.5],  # Class 9: Teal
+        ]
+
         for i in range(B):
             img = orig_images[i].detach().cpu()
-            pred = pred_masks[i].detach().cpu().squeeze(0)
-            target = target_masks[i].detach().cpu().squeeze(0)
+            pred = pred_masks[i].detach().cpu()
+            target = target_masks[i].detach().cpu()
+
+            # Remove any extra dimensions
+            if pred.dim() == 3:
+                pred = pred.squeeze(0)
+            if target.dim() == 3:
+                target = target.squeeze(0)
 
             # Normalize image to [0,1] if needed
             if img.max() > 1:
@@ -167,16 +212,30 @@ class LitModel(pl.LightningModule):
             img_np = TF.to_pil_image(img)
             img_np = np.array(img_np).astype(np.float32) / 255.0  # Ensure [0,1]
 
-            # Create colored mask overlays
-            green_mask = np.zeros_like(img_np)
-            red_mask = np.zeros_like(img_np)
+            # Create colored mask overlays for multiclass
+            target_np = target.numpy().astype(np.int32)
+            pred_np = pred.numpy().astype(np.int32)
 
-            green_mask[target.bool()] = [0, 1, 0]  # Green
-            red_mask[pred.bool()] = [1, 0, 0]      # Red
+            # Initialize colored masks
+            target_colored = np.zeros((*target_np.shape, 3))
+            pred_colored = np.zeros((*pred_np.shape, 3))
 
-            # Blend with alpha
-            overlay_gt = img_np * (1 - alpha) + green_mask * alpha
-            overlay_pred = img_np * (1 - alpha) + red_mask * alpha
+            # Apply colors for each class
+            for class_idx in range(min(len(class_colors), self.num_classes + 1)):
+                target_colored[target_np == class_idx] = class_colors[class_idx]
+                pred_colored[pred_np == class_idx] = class_colors[class_idx]
+
+            # Blend with alpha (skip background - class 0)
+            overlay_gt = img_np.copy()
+            overlay_pred = img_np.copy()
+
+            for class_idx in range(1, min(len(class_colors), self.num_classes + 1)):
+                mask_gt = (target_np == class_idx)
+                mask_pred = (pred_np == class_idx)
+                if mask_gt.any():
+                    overlay_gt[mask_gt] = img_np[mask_gt] * (1 - alpha) + np.array(class_colors[class_idx]) * alpha
+                if mask_pred.any():
+                    overlay_pred[mask_pred] = img_np[mask_pred] * (1 - alpha) + np.array(class_colors[class_idx]) * alpha
 
             # Concatenate
             combined = np.concatenate((overlay_gt, overlay_pred), axis=1)
@@ -195,21 +254,33 @@ class LitModel(pl.LightningModule):
             input = self.validation_step_inputs[i]
             input = torch.sigmoid(input)
 
-            pred = torch.sigmoid(outs[0])
-            pred = (pred > 0.5).float()
-            target = torch.sigmoid(outs[1])
-            target = (target > 0.5).float()
+            # MULTICLASS: Apply appropriate activation and get predictions
+            if self.num_classes == 1:
+                pred = torch.sigmoid(outs[0])
+                pred = (pred > 0.5).float()
+                target = outs[1].float().unsqueeze(1)  # Add channel dimension for binary
+            else:
+                pred = torch.softmax(outs[0], dim=1)  # (B, C, H, W)
+                pred = torch.argmax(pred, dim=1)  # (B, H, W)
+                target = outs[1]  # Already (B, H, W)
+
             self.save_overlay_images(input, pred, target, "val_"+str(i))
 
         preds = torch.cat(preds).cpu()
         targets = torch.cat(targets).cpu()
 
         loss = self.criterion(preds, targets)
-        
-        dsc = smp_utils.metrics.Fscore(activation='sigmoid')(preds, targets)
+
+        # MULTICLASS: Use appropriate activation for metrics
+        if self.num_classes == 1:
+            activation = 'sigmoid'
+        else:
+            activation = 'softmax2d'
+
+        dsc = smp_utils.metrics.Fscore(activation=activation)(preds, targets)
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val_dsc', dsc, on_step=False, on_epoch=True, prog_bar=True)
-        
+
         self.validation_step_outputs.clear()
         self.validation_step_inputs.clear()
 
@@ -223,18 +294,30 @@ class LitModel(pl.LightningModule):
             input = self.validation_step_inputs[i]
             input = torch.sigmoid(input)
 
-            pred = torch.sigmoid(outs[0])
-            pred = (pred > 0.5).float()
-            target = torch.sigmoid(outs[1])
-            target = (target > 0.5).float()
+            # MULTICLASS: Apply appropriate activation and get predictions
+            if self.num_classes == 1:
+                pred = torch.sigmoid(outs[0])
+                pred = (pred > 0.5).float()
+                target = outs[1].float().unsqueeze(1)  # Add channel dimension for binary
+            else:
+                pred = torch.softmax(outs[0], dim=1)  # (B, C, H, W)
+                pred = torch.argmax(pred, dim=1)  # (B, H, W)
+                target = outs[1]  # Already (B, H, W)
+
             self.save_overlay_images(input, pred, target, "test_"+str(i))
-        
+
         preds = torch.cat(preds).cpu()
         targets = torch.cat(targets).cpu()
 
         test_loss = self.criterion(preds, targets)
 
-        test_dsc = smp_utils.metrics.Fscore(activation='sigmoid')(preds, targets)
+        # MULTICLASS: Use appropriate activation for metrics
+        if self.num_classes == 1:
+            activation = 'sigmoid'
+        else:
+            activation = 'softmax2d'
+
+        test_dsc = smp_utils.metrics.Fscore(activation=activation)(preds, targets)
         self.log('test_loss', test_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('test_dsc', test_dsc, on_step=False, on_epoch=True, prog_bar=True)
 

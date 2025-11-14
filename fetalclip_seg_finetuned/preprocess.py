@@ -20,6 +20,11 @@ SAVE_PREPROCESSED_DIR = config['paths']['dir_preprocessed']
 SAVE_IMAGE_SIZE = 224
 N_AUGMENTATIONS = 5
 
+# MULTICLASS SEGMENTATION: Set the number of classes including background
+# Example: For 3 classes + background, NUM_CLASSES = 4
+# Annotation images should have pixel values: 0 (background), 1 (class1), 2 (class2), etc.
+NUM_CLASSES = 1  # UPDATE THIS: Set to your number of classes (excluding background if it's class 0)
+
 with open(PATH_TRAIN_VAL_SPLIT, 'r') as file:
     dict_list_pid = json.load(file)
 
@@ -121,7 +126,10 @@ for filename in tqdm(list_images):
 
     img = np.array(img)
     ann = np.array(ann)
-    ann = (ann > 0).astype(np.uint8) * 255
+    # MULTICLASS: Keep original class labels (0, 1, 2, ..., NUM_CLASSES-1)
+    # For binary segmentation: ann = (ann > 0).astype(np.uint8) * 255
+    # For multiclass: keep the annotation values as class indices
+    ann = ann.astype(np.uint8)  # Ensure class labels are integers
     # ann = fill_contour(ann)
 
     assert ann.shape[:2] == img.shape[:2]
@@ -164,11 +172,12 @@ for filename in tqdm(list_images):
 
     img = np.array(img)
     ann = np.array(ann)
-    ann = (ann > 0).astype(np.uint8) * 255
+    # MULTICLASS: Keep original class labels
+    ann = ann.astype(np.uint8)
     # ann = fill_contour(ann)
 
     assert ann.shape[:2] == img.shape[:2]
-    
+
     img_ann = preprocessing(image=img, mask=ann)
     img = img_ann['image']
     ann = img_ann['mask']
@@ -196,12 +205,13 @@ for filename in tqdm(list_images):
 
     img = np.array(img)
     ann = np.array(ann)
-    ann = (ann > 0).astype(np.uint8) * 255
+    # MULTICLASS: Keep original class labels
+    ann = ann.astype(np.uint8)
 
     # ann = fill_contour(ann)
 
     assert ann.shape[:2] == img.shape[:2]
-    
+
     img_ann = preprocessing(image=img, mask=ann)
     img = img_ann['image']
     ann = img_ann['mask']

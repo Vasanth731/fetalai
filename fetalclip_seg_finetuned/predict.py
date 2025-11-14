@@ -31,8 +31,12 @@ DIR_DATA = "/home/htic/anu/sononet_cusp/in/mediscan_video/FL"
 SAVE_IMAGE_SIZE = 224
 
 
-LIST_CLASSES = ['Femur'] # head
-NUM_CLASSES  = len(LIST_CLASSES)
+# MULTICLASS SEGMENTATION CONFIGURATION
+# Update these values to match your segmentation task:
+# - LIST_CLASSES: Names of your classes (e.g., ['head', 'femur', 'abdomen'])
+# - NUM_CLASSES: Total number of classes (should match len(LIST_CLASSES))
+LIST_CLASSES = ['Femur']  # UPDATE THIS: Add all your class names
+NUM_CLASSES  = len(LIST_CLASSES)  # UPDATE THIS if needed
 INIT_FILTERS = 32
 
 PATH_FETALCLIP_WEIGHT = config['paths']['path_fetalclip_weight']
@@ -263,9 +267,19 @@ def run_infer_img(img, encoder, model, preprocess_img):
 
     embs = [z[k] for k in ['z3', 'z6', 'z9', 'z12']]
     pred = model([img, *embs]) # UNETR
-    sigmoid_mask = torch.sigmoid(pred)
-    pred = (sigmoid_mask > 0.5).float()
-    pred_mask = pred.squeeze().detach().cpu().numpy()
+
+    # MULTICLASS: Apply appropriate activation based on number of classes
+    if NUM_CLASSES == 1:
+        # Binary segmentation: use sigmoid and threshold
+        sigmoid_mask = torch.sigmoid(pred)
+        pred_mask = (sigmoid_mask > 0.5).float()
+        pred_mask = pred_mask.squeeze().detach().cpu().numpy()
+    else:
+        # Multiclass segmentation: use softmax and argmax
+        softmax_mask = torch.softmax(pred, dim=1)  # (B, C, H, W)
+        pred_mask = torch.argmax(softmax_mask, dim=1)  # (B, H, W)
+        pred_mask = pred_mask.squeeze().detach().cpu().numpy().astype(np.uint8)
+
     return pred_mask, img_resized
 
 
@@ -334,23 +348,57 @@ def extract_original_from_padded(padded_image, orig_size):
 #         save_prediction(img_path,img_resized,pred_mask,img.size, img_padded.size)
 
 def save_prediction(img_path, img, pred, orig_size, pad_size):
-    mask = Image.fromarray((pred * 255).astype(np.uint8))
-    
-    # Save binary mask
+    # MULTICLASS: Define colormap for different classes (RGB values 0-255)
+    class_colors = [
+        [0, 0, 0],        # Class 0: Black (background)
+        [255, 0, 0],      # Class 1: Red
+        [0, 255, 0],      # Class 2: Green
+        [0, 0, 255],      # Class 3: Blue
+        [255, 255, 0],    # Class 4: Yellow
+        [255, 0, 255],    # Class 5: Magenta
+        [0, 255, 255],    # Class 6: Cyan
+        [255, 128, 0],    # Class 7: Orange
+        [128, 0, 255],    # Class 8: Purple
+        [0, 128, 128],    # Class 9: Teal
+    ]
+
+    # For binary segmentation (NUM_CLASSES=1), pred contains 0 or 1
+    # For multiclass, pred contains class indices 0, 1, 2, ..., NUM_CLASSES-1
+    if NUM_CLASSES == 1:
+        # Binary case: scale to 255
+        mask = Image.fromarray((pred * 255).astype(np.uint8))
+    else:
+        # Multiclass case: keep as class indices
+        mask = Image.fromarray(pred.astype(np.uint8))
+
+    # Save mask
     mask_filename = os.path.splitext(os.path.basename(img_path))[0] + ".png"
     mask_save_path = os.path.join(MASK_DIR, mask_filename)
     mask.save(mask_save_path)
 
     # Convert original image to RGBA for overlay
     orig_img_rgb = img.convert("RGBA")
+    orig_img_arr = np.array(orig_img_rgb)
 
-    # Create red overlay where mask is active
+    # Create colored overlay based on predictions
     mask_arr = np.array(mask)
-    mask_binary = (mask_arr > 0).astype(np.uint8)
-
     overlay = np.zeros((mask_arr.shape[0], mask_arr.shape[1], 4), dtype=np.uint8)
-    overlay[..., 0] = 255  # Red
-    overlay[..., 3] = mask_binary * int(255 * 0.5)  # Alpha
+
+    if NUM_CLASSES == 1:
+        # Binary segmentation: red overlay for foreground
+        mask_binary = (mask_arr > 0).astype(np.uint8)
+        overlay[..., 0] = 255  # Red
+        overlay[..., 3] = mask_binary * int(255 * 0.5)  # Alpha
+    else:
+        # Multiclass segmentation: different colors for each class
+        for class_idx in range(NUM_CLASSES):
+            class_mask = (mask_arr == class_idx)
+            if class_mask.any() and class_idx > 0:  # Skip background (class 0)
+                color = class_colors[min(class_idx, len(class_colors) - 1)]
+                overlay[class_mask, 0] = color[0]  # R
+                overlay[class_mask, 1] = color[1]  # G
+                overlay[class_mask, 2] = color[2]  # B
+                overlay[class_mask, 3] = int(255 * 0.5)  # Alpha
 
     overlay_img = Image.fromarray(overlay, mode="RGBA")
     blended = Image.alpha_composite(orig_img_rgb, overlay_img)
