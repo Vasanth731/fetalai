@@ -22,12 +22,14 @@ from utils_get_embeddings import (
 with open('config.json', 'r') as file:
     config = json.load(file)
 
-OVERLAY_DIR='./infer_fl/overlays'
-MASK_DIR='./infer_fl/masks'
+OVERLAY_DIR='./infer_bpd/overlays'
+MASK_DIR='./infer_bpd/masks'
 # CKPT_PATH = "/home/htic/Documents/FetalCLIP/segmentation/final_data/segmentation/AC/fetalclip/0_0/epoch=19-step=2120.ckpt"
 # CKPT_PATH = "/home/htic/Documents/FetalCLIP/segmentation/final_data/segmentation/BPD/fetalclip/0_0/epoch=19-step=3420.ckpt"
-CKPT_PATH = "/home/htic/Documents/FetalCLIP/segmentation/final_data/segmentation/FL/fetalclip/0_0/epoch=13-step=1610.ckpt"
-DIR_DATA = "/home/htic/anu/sononet_cusp/in/mediscan_video/FL"
+# CKPT_PATH = "/home/htic/Documents/FetalCLIP/segmentation/final_data/segmentation/FL/fetalclip/0_0/epoch=13-step=1610.ckpt"
+
+CKPT_PATH = "fetalclip/4_1/epoch=19-step=560.ckpt"
+DIR_DATA = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/02_BPD_HC_Transthalamic"
 SAVE_IMAGE_SIZE = 224
 
 
@@ -35,7 +37,8 @@ SAVE_IMAGE_SIZE = 224
 # Update these values to match your segmentation task:
 # - LIST_CLASSES: Names of your classes (e.g., ['head', 'femur', 'abdomen'])
 # - NUM_CLASSES: Total number of classes (should match len(LIST_CLASSES))
-LIST_CLASSES = ['Femur']  # UPDATE THIS: Add all your class names
+# LIST_CLASSES = ['Femur']  # UPDATE THIS: Add all your class names
+LIST_CLASSES = ['background', 'BPD', 'AC', 'FL']
 NUM_CLASSES  = len(LIST_CLASSES)  # UPDATE THIS if needed
 INIT_FILTERS = 32
 
@@ -277,10 +280,21 @@ def run_infer_img(img, encoder, model, preprocess_img):
     else:
         # Multiclass segmentation: use softmax and argmax
         softmax_mask = torch.softmax(pred, dim=1)  # (B, C, H, W)
-        pred_mask = torch.argmax(softmax_mask, dim=1)  # (B, H, W)
-        pred_mask = pred_mask.squeeze().detach().cpu().numpy().astype(np.uint8)
 
-    return pred_mask, img_resized
+        # Debug: Print prediction statistics
+        print(f"[DEBUG] Logits shape: {pred.shape}")
+        print(f"[DEBUG] Logits min/max: {pred.min().item():.3f}/{pred.max().item():.3f}")
+        print(f"[DEBUG] Softmax probabilities per class (mean):")
+        for c in range(NUM_CLASSES):
+            print(f"  Class {c}: {softmax_mask[0, c].mean().item():.4f}")
+
+        pred_mask = torch.argmax(softmax_mask, dim=1)  # (B, H, W)
+        pred_mask_np = pred_mask.squeeze().detach().cpu().numpy().astype(np.uint8)
+
+        print(f"[DEBUG] Predicted mask unique values: {np.unique(pred_mask_np)}")
+        print(f"[DEBUG] Predicted mask shape: {pred_mask_np.shape}")
+
+    return pred_mask_np, img_resized
 
 
 def extract_original_from_padded(padded_image, orig_size):
@@ -348,6 +362,10 @@ def extract_original_from_padded(padded_image, orig_size):
 #         save_prediction(img_path,img_resized,pred_mask,img.size, img_padded.size)
 
 def save_prediction(img_path, img, pred, orig_size, pad_size):
+    # Debug: Print prediction statistics
+    print(f"[DEBUG save_prediction] pred unique values: {np.unique(pred)}")
+    print(f"[DEBUG save_prediction] pred shape: {pred.shape}, dtype: {pred.dtype}")
+
     # MULTICLASS: Define colormap for different classes (RGB values 0-255)
     class_colors = [
         [0, 0, 0],        # Class 0: Black (background)
@@ -410,7 +428,7 @@ def save_prediction(img_path, img, pred, orig_size, pad_size):
 
 
 def run_infer_folder(folder_path=DIR_DATA):
-    list_images = [f for f in os.listdir(folder_path) if f.lower().endswith('.jpg')]
+    list_images = [f for f in os.listdir(folder_path) if f.lower().endswith('.png')]
 
     encoder, model, preprocess_img = setup_model(CKPT_PATH)
 

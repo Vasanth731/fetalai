@@ -8,6 +8,7 @@ import albumentations as A
 
 from tqdm import tqdm
 from PIL import Image
+from pathlib import Path
 
 with open('config.json', 'r') as file:
     config = json.load(file)
@@ -20,10 +21,10 @@ SAVE_PREPROCESSED_DIR = config['paths']['dir_preprocessed']
 SAVE_IMAGE_SIZE = 224
 N_AUGMENTATIONS = 5
 
-# MULTICLASS SEGMENTATION: Set the number of classes including background
-# Example: For 3 classes + background, NUM_CLASSES = 4
-# Annotation images should have pixel values: 0 (background), 1 (class1), 2 (class2), etc.
-NUM_CLASSES = 1  # UPDATE THIS: Set to your number of classes (excluding background if it's class 0)
+# MULTICLASS SEGMENTATION: Categories mapped to class labels
+# Background = 0, BPD = 1, AC = 2, FL = 3
+CATEGORIES = {'BPD': 1, 'AC': 2, 'FL': 3}
+NUM_CLASSES = 4  # Background (0) + BPD (1) + AC (2) + FL (3)
 
 with open(PATH_TRAIN_VAL_SPLIT, 'r') as file:
     dict_list_pid = json.load(file)
@@ -104,126 +105,207 @@ list_pid_train = list(set(list_pid_train))
 list_pid_val   = list(set(list_pid_val))
 
 len(list_pid_train), len(list_pid_val)
-list_pid_train = [str(int(l)) for l in list_pid_train]
-list_pid_val   = [str(int(l)) for l in list_pid_val]
-list_test_pid  = [str(int(l)) for l in list_test_pid]
 
+# Normalize patient IDs: try to convert to int for numeric IDs, keep as string otherwise
+def normalize_pid(pid):
+    try:
+        return str(int(pid))
+    except ValueError:
+        return str(pid)
 
-list_images = [p for p in os.listdir(DIR_DATA) if 'Annotation' not in p]
-for filename in tqdm(list_images):
-    pid = str(int(filename.split('_')[0]))
-    imgname = filename.split('.')[0]
-    if pid not in list_pid_train:
+list_pid_train = [normalize_pid(l) for l in list_pid_train]
+list_pid_val   = [normalize_pid(l) for l in list_pid_val]
+list_test_pid  = [normalize_pid(l) for l in list_test_pid]
+
+# Process data from category-based folder structure
+# fetalclip_dataset/BPD/train/images, fetalclip_dataset/BPD/train/masks, etc.
+base_path = Path(DIR_DATA)
+
+print("Processing TRAIN data...")
+for category, class_label in tqdm(CATEGORIES.items(), desc="Categories"):
+    image_dir = base_path / category / 'train' / 'images'
+    mask_dir = base_path / category / 'train' / 'masks'
+
+    if not image_dir.exists() or not mask_dir.exists():
+        print(f"Warning: {category} train directories not found, skipping...")
         continue
-    
-    img = Image.open(os.path.join(DIR_DATA, f'{imgname}.png'))
-    ann = Image.open(os.path.join(DIR_DATA, f'{imgname}_Annotation.png')).convert("L")
-    
-    assert np.array(ann).shape[:2] == np.array(img).shape[:2]
 
-    img = make_image_square_with_zero_padding(img)
-    ann = make_image_square_with_zero_padding(ann)
+    # Get all image files
+    image_files = sorted(list(image_dir.glob('*.png')) + list(image_dir.glob('*.jpg')) +
+                        list(image_dir.glob('*.jpeg')))
 
-    img = np.array(img)
-    ann = np.array(ann)
-    # MULTICLASS: Keep original class labels (0, 1, 2, ..., NUM_CLASSES-1)
-    # For binary segmentation: ann = (ann > 0).astype(np.uint8) * 255
-    # For multiclass: keep the annotation values as class indices
-    ann = ann.astype(np.uint8)  # Ensure class labels are integers
-    # ann = fill_contour(ann)
+    for img_file in tqdm(image_files, desc=f"Processing {category} train", leave=False):
+        # Extract patient ID from filename (assuming format like <pid>_<addendum>.png or just <pid>.png)
+        filename_stem = img_file.stem
+        # Try to extract patient ID (first part before underscore, or entire stem if no underscore)
+        pid = filename_stem.split('_')[0] if '_' in filename_stem else filename_stem
 
-    assert ann.shape[:2] == img.shape[:2]
+        # Check if this patient is in training set
+        if pid not in list_pid_train:
+            continue
 
-    data = {'img': img.copy(), 'label': ann.copy()}
-    
-    for i in range(N_AUGMENTATIONS):
-        img = data['img'].copy()
-        ann = data['label'].copy()
+        # Load image and corresponding mask
+        mask_file = mask_dir / img_file.name
+        if not mask_file.exists():
+            print(f"Warning: Mask not found for {img_file.name}, skipping...")
+            continue
 
-        if AUGMENTATION:
-            augmented = AUGMENTATION(image=img, mask=ann)
-            img = augmented['image']
-            ann = augmented['mask']
-        
+        img = Image.open(img_file)
+        ann = Image.open(mask_file).convert("L")
+
+        assert np.array(ann).shape[:2] == np.array(img).shape[:2]
+
+        img = make_image_square_with_zero_padding(img)
+        ann = make_image_square_with_zero_padding(ann)
+
+        img = np.array(img)
+        ann = np.array(ann)
+
+        # MULTICLASS: Relabel mask to use class_label for this category
+        # Any non-zero pixel in the mask becomes the category's class label
+        relabeled_ann = np.zeros_like(ann, dtype=np.uint8)
+        relabeled_ann[ann > 0] = class_label
+        ann = relabeled_ann
+
+        assert ann.shape[:2] == img.shape[:2]
+
+        data = {'img': img.copy(), 'label': ann.copy()}
+
+        # Create augmented versions
+        for i in range(N_AUGMENTATIONS):
+            img = data['img'].copy()
+            ann = data['label'].copy()
+
+            if AUGMENTATION:
+                augmented = AUGMENTATION(image=img, mask=ann)
+                img = augmented['image']
+                ann = augmented['mask']
+
+            img_ann = preprocessing(image=img, mask=ann)
+            img = img_ann['image']
+            ann = img_ann['mask']
+
+            # Save with category and original filename
+            save_name = f"{pid}_{category}_{img_file.stem}_{i}.npz"
+            np.savez(
+                os.path.join(SAVE_PREPROCESSED_DIR, "train", save_name),
+                img=img, ann=ann,
+            )
+
+print("\nProcessing VALIDATION data...")
+for category, class_label in tqdm(CATEGORIES.items(), desc="Categories"):
+    image_dir = base_path / category / 'train' / 'images'
+    mask_dir = base_path / category / 'train' / 'masks'
+
+    if not image_dir.exists() or not mask_dir.exists():
+        print(f"Warning: {category} train directories not found, skipping...")
+        continue
+
+    # Get all image files
+    image_files = sorted(list(image_dir.glob('*.png')) + list(image_dir.glob('*.jpg')) +
+                        list(image_dir.glob('*.jpeg')))
+
+    for img_file in tqdm(image_files, desc=f"Processing {category} val", leave=False):
+        filename_stem = img_file.stem
+        pid = filename_stem.split('_')[0] if '_' in filename_stem else filename_stem
+
+        # Check if this patient is in validation set
+        if pid not in list_pid_val:
+            continue
+
+        # Load image and corresponding mask
+        mask_file = mask_dir / img_file.name
+        if not mask_file.exists():
+            print(f"Warning: Mask not found for {img_file.name}, skipping...")
+            continue
+
+        img = Image.open(img_file)
+        ann = Image.open(mask_file).convert("L")
+
+        assert np.array(ann).shape[:2] == np.array(img).shape[:2]
+
+        img = make_image_square_with_zero_padding(img)
+        ann = make_image_square_with_zero_padding(ann)
+
+        img = np.array(img)
+        ann = np.array(ann)
+
+        # MULTICLASS: Relabel mask to use class_label for this category
+        relabeled_ann = np.zeros_like(ann, dtype=np.uint8)
+        relabeled_ann[ann > 0] = class_label
+        ann = relabeled_ann
+
+        assert ann.shape[:2] == img.shape[:2]
+
         img_ann = preprocessing(image=img, mask=ann)
         img = img_ann['image']
         ann = img_ann['mask']
 
+        # Save without augmentation for validation
+        save_name = f"{pid}_{category}_{img_file.stem}.npz"
         np.savez(
-            os.path.join(SAVE_PREPROCESSED_DIR, "train", f"{filename.split('.')[0]}_{i}.npz"),
+            os.path.join(SAVE_PREPROCESSED_DIR, "val", save_name),
             img=img, ann=ann,
         )
 
-        img = Image.fromarray(img)
-        ann = Image.fromarray(ann)
+print("\nProcessing TEST data...")
+for category, class_label in tqdm(CATEGORIES.items(), desc="Categories"):
+    image_dir = base_path / category / 'train' / 'images'
+    mask_dir = base_path / category / 'train' / 'masks'
 
-for filename in tqdm(list_images):
-    pid = str(int(filename.split('_')[0]))
-    imgname = filename.split('.')[0]
-    if pid not in list_pid_val:
+    if not image_dir.exists() or not mask_dir.exists():
+        print(f"Warning: {category} train directories not found, skipping...")
         continue
-    img = Image.open(os.path.join(DIR_DATA, f'{imgname}.png'))
-    ann = Image.open(os.path.join(DIR_DATA, f'{imgname}_Annotation.png')).convert("L")
-    
-    assert np.array(ann).shape[:2] == np.array(img).shape[:2]
 
-    img = make_image_square_with_zero_padding(img)
-    ann = make_image_square_with_zero_padding(ann)
+    # Get all image files
+    image_files = sorted(list(image_dir.glob('*.png')) + list(image_dir.glob('*.jpg')) +
+                        list(image_dir.glob('*.jpeg')))
 
-    img = np.array(img)
-    ann = np.array(ann)
-    # MULTICLASS: Keep original class labels
-    ann = ann.astype(np.uint8)
-    # ann = fill_contour(ann)
+    for img_file in tqdm(image_files, desc=f"Processing {category} test", leave=False):
+        filename_stem = img_file.stem
+        pid = filename_stem.split('_')[0] if '_' in filename_stem else filename_stem
 
-    assert ann.shape[:2] == img.shape[:2]
+        # Check if this patient is in test set
+        if pid not in list_test_pid:
+            continue
 
-    img_ann = preprocessing(image=img, mask=ann)
-    img = img_ann['image']
-    ann = img_ann['mask']
+        # Load image and corresponding mask
+        mask_file = mask_dir / img_file.name
+        if not mask_file.exists():
+            print(f"Warning: Mask not found for {img_file.name}, skipping...")
+            continue
 
-    np.savez(
-        os.path.join(SAVE_PREPROCESSED_DIR, "val", f"{filename.split('.')[0]}.npz"),
-        img=img, ann=ann,
-    )
+        img = Image.open(img_file)
+        ann = Image.open(mask_file).convert("L")
 
-    img = Image.fromarray(img)
-    ann = Image.fromarray(ann)
+        assert np.array(ann).shape[:2] == np.array(img).shape[:2]
 
-for filename in tqdm(list_images):
-    pid = str(int(filename.split('_')[0]))
-    imgname = filename.split('.')[0]
-    if pid not in list_test_pid:
-        continue
-    img = Image.open(os.path.join(DIR_DATA, f'{imgname}.png'))
-    ann = Image.open(os.path.join(DIR_DATA, f'{imgname}_Annotation.png')).convert("L")
-    
-    assert np.array(ann).shape[:2] == np.array(img).shape[:2]
+        img = make_image_square_with_zero_padding(img)
+        ann = make_image_square_with_zero_padding(ann)
 
-    img = make_image_square_with_zero_padding(img)
-    ann = make_image_square_with_zero_padding(ann)
+        img = np.array(img)
+        ann = np.array(ann)
 
-    img = np.array(img)
-    ann = np.array(ann)
-    # MULTICLASS: Keep original class labels
-    ann = ann.astype(np.uint8)
+        # MULTICLASS: Relabel mask to use class_label for this category
+        relabeled_ann = np.zeros_like(ann, dtype=np.uint8)
+        relabeled_ann[ann > 0] = class_label
+        ann = relabeled_ann
 
-    # ann = fill_contour(ann)
+        assert ann.shape[:2] == img.shape[:2]
 
-    assert ann.shape[:2] == img.shape[:2]
+        img_ann = preprocessing(image=img, mask=ann)
+        img = img_ann['image']
+        ann = img_ann['mask']
 
-    img_ann = preprocessing(image=img, mask=ann)
-    img = img_ann['image']
-    ann = img_ann['mask']
+        # Save without augmentation for test
+        save_name = f"{pid}_{category}_{img_file.stem}.npz"
+        np.savez(
+            os.path.join(SAVE_PREPROCESSED_DIR, "test", save_name),
+            img=img, ann=ann,
+        )
 
-    np.savez(
-        os.path.join(SAVE_PREPROCESSED_DIR, "test", f"{filename.split('.')[0]}.npz"),
-        img=img, ann=ann,
-    )
-
-    img = Image.fromarray(img)
-    ann = Image.fromarray(ann)
-print(len(os.listdir('preprocessed_data/train')))
-print(len(os.listdir('preprocessed_data/val')))
-print(len(os.listdir('preprocessed_data/test')))
+print(f"\nPreprocessing complete!")
+print(f"Train samples: {len(os.listdir(os.path.join(SAVE_PREPROCESSED_DIR, 'train')))}")
+print(f"Val samples: {len(os.listdir(os.path.join(SAVE_PREPROCESSED_DIR, 'val')))}")
+print(f"Test samples: {len(os.listdir(os.path.join(SAVE_PREPROCESSED_DIR, 'test')))}")
  

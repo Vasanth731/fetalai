@@ -74,6 +74,7 @@ def run(fold):
     print("len(train_ds)", len(ds_train))
     print("len(val_ds)", len(ds_val))
     print("len(test_ds)", len(ds_test))
+    print(f"-----------------------------------------",{csv_filepath})
 
     # Loop through multiple runs
     for j in range(N_RUNS_PER_EXP):

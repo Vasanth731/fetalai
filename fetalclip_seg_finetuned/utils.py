@@ -50,12 +50,10 @@ with open('test_id.json', 'r') as file:
 LIST_TEST_PID = list(LIST_TEST_PID.keys())
 
 # MULTICLASS SEGMENTATION CONFIGURATION
-# Update these values for your specific task:
-# - LIST_CLASSES: Names of your classes (e.g., ['background', 'head', 'body', 'limbs'])
-# - NUM_CLASSES: Total number of classes including background
-# Note: If background is class 0, include it in the count
-LIST_CLASSES = ['head']  # UPDATE THIS: Add all your class names
-NUM_CLASSES  = len(LIST_CLASSES)  # UPDATE THIS if needed: Total number of output classes
+# Background (0) + BPD (1) + AC (2) + FL (3)
+# Total 4 classes for multiclass segmentation
+LIST_CLASSES = ['background', 'BPD', 'AC', 'FL']
+NUM_CLASSES  = len(LIST_CLASSES)  # 4 classes total
 
 os.makedirs(DIR_SAVE_CSV_EXP, exist_ok=True)
 
@@ -68,16 +66,37 @@ class DatasetHC18(torch.utils.data.Dataset):
             preprocess_mask,
             dict_embeddings=None,
         ):
-        
+
         self.preprocess_img = preprocess_img
         self.preprocess_mask = preprocess_mask
         self.dict_embeddings = dict_embeddings
 
-        list_patients = [str(int(l)) for l in list_patients]
+        # Handle patient IDs with parentheses (e.g., "30415169(1)") and non-numeric IDs
+        processed_patients = []
+        for pid in list_patients:
+            try:
+                # Try to extract numeric part before parenthesis if present
+                if '(' in pid:
+                    pid = pid.split('(')[0]
+                # Convert to int and back to string to normalize
+                processed_patients.append(str(int(pid)))
+            except ValueError:
+                # Keep original ID if it's not convertible to int (e.g., "ANID")
+                processed_patients.append(str(pid))
+        list_patients = processed_patients
 
         self.data = []
         for filename in os.listdir(root):
-            pid = str(int(filename.split('_')[0]))
+            pid_raw = filename.split('_')[0]
+            try:
+                # Extract numeric part before parenthesis if present
+                if '(' in pid_raw:
+                    pid_raw = pid_raw.split('(')[0]
+                pid = str(int(pid_raw))
+            except ValueError:
+                # Keep original if not convertible
+                pid = str(pid_raw)
+
             if pid not in list_patients:
                 continue
 
@@ -88,10 +107,10 @@ class DatasetHC18(torch.utils.data.Dataset):
                 ))
             else:
                 self.data.append(os.path.join(root, filename))
-    
+
     def __len__(self):
         return len(self.data)
-    
+
     def __getitem__(self, index):
         if self.dict_embeddings:
             data = np.load(self.data[index][0])
@@ -112,6 +131,10 @@ class DatasetHC18(torch.utils.data.Dataset):
         # Remove the channel dimension added by ToTensor if present
         if ann.dim() == 3 and ann.shape[0] == 1:
             ann = ann.squeeze(0)  # (1, H, W) -> (H, W)
+
+        # FIX: ToTensor divides by 255, so we need to multiply back to get original class indices
+        # This converts 0.0, 0.004, 0.008, 0.012 back to 0, 1, 2, 3
+        ann = (ann * 255).round()
 
         # Convert to long tensor for cross-entropy loss
         ann = ann.long()
@@ -148,13 +171,26 @@ class LitModel(pl.LightningModule):
 
         loss = self.criterion(pred, y)
 
-        # MULTICLASS: Use appropriate activation based on number of classes
+        # MULTICLASS: Compute metrics using per-class scores
         if self.num_classes == 1:
             activation = 'sigmoid'
+            dsc = smp_utils.metrics.Fscore(activation=activation)(pred, y)
         else:
-            activation = 'softmax2d'  # For multiclass segmentation
+            # For multiclass, compute per-class Dice and average (excluding background)
+            # Convert predictions to probabilities
+            pred_probs = torch.softmax(pred, dim=1)  # (B, C, H, W)
+            # Convert targets to one-hot encoding
+            targets_onehot = F.one_hot(y.long(), num_classes=self.num_classes).permute(0, 3, 1, 2).float()  # (B, C, H, W)
 
-        dsc = smp_utils.metrics.Fscore(activation=activation)(pred, y)
+            # Compute Dice per class
+            class_dsc = []
+            for c in range(1, self.num_classes):  # Skip background (class 0)
+                tp = torch.sum(pred_probs[:, c] * targets_onehot[:, c])
+                fp = torch.sum(pred_probs[:, c] * (1 - targets_onehot[:, c]))
+                fn = torch.sum((1 - pred_probs[:, c]) * targets_onehot[:, c])
+                dice = (2 * tp + 1e-7) / (2 * tp + fp + fn + 1e-7)
+                class_dsc.append(dice)
+            dsc = torch.mean(torch.stack(class_dsc))
 
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log('train_dsc', dsc, on_step=True, on_epoch=True, prog_bar=True)
@@ -204,13 +240,21 @@ class LitModel(pl.LightningModule):
             if target.dim() == 3:
                 target = target.squeeze(0)
 
-            # Normalize image to [0,1] if needed
-            if img.max() > 1:
-                img = img / 255.0
+            # Debug: Print mask statistics (only for first batch)
+            if i == 0 and addendum.startswith('val_0'):
+                print(f"[DEBUG] Target unique values: {torch.unique(target)}")
+                print(f"[DEBUG] Pred unique values: {torch.unique(pred)}")
+                print(f"[DEBUG] Target shape: {target.shape}, Pred shape: {pred.shape}")
+
+            # Denormalize image from CLIP normalization (ImageNet stats)
+            # CLIP uses mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]
+            mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(3, 1, 1)
+            std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(3, 1, 1)
+            img = img * std + mean  # Denormalize
+            img = torch.clamp(img, 0, 1)  # Clamp to [0, 1]
 
             # Convert to numpy [H, W, 3]
-            img_np = TF.to_pil_image(img)
-            img_np = np.array(img_np).astype(np.float32) / 255.0  # Ensure [0,1]
+            img_np = img.permute(1, 2, 0).numpy()  # (C, H, W) -> (H, W, C)
 
             # Create colored mask overlays for multiclass
             target_np = target.numpy().astype(np.int32)
@@ -252,7 +296,6 @@ class LitModel(pl.LightningModule):
             preds.append(outs[0])
             targets.append(outs[1])
             input = self.validation_step_inputs[i]
-            input = torch.sigmoid(input)
 
             # MULTICLASS: Apply appropriate activation and get predictions
             if self.num_classes == 1:
@@ -266,18 +309,31 @@ class LitModel(pl.LightningModule):
 
             self.save_overlay_images(input, pred, target, "val_"+str(i))
 
-        preds = torch.cat(preds).cpu()
-        targets = torch.cat(targets).cpu()
+        preds = torch.cat(preds)
+        targets = torch.cat(targets)
 
         loss = self.criterion(preds, targets)
 
-        # MULTICLASS: Use appropriate activation for metrics
+        # MULTICLASS: Compute metrics using per-class scores
         if self.num_classes == 1:
             activation = 'sigmoid'
+            dsc = smp_utils.metrics.Fscore(activation=activation)(preds.cpu(), targets.cpu())
         else:
-            activation = 'softmax2d'
+            # For multiclass, compute per-class Dice and average (excluding background)
+            # Convert predictions to probabilities
+            pred_probs = torch.softmax(preds, dim=1)  # (N, C, H, W)
+            # Convert targets to one-hot encoding
+            targets_onehot = F.one_hot(targets.long(), num_classes=self.num_classes).permute(0, 3, 1, 2).float()  # (N, C, H, W)
 
-        dsc = smp_utils.metrics.Fscore(activation=activation)(preds, targets)
+            # Compute Dice per class
+            class_dsc = []
+            for c in range(1, self.num_classes):  # Skip background (class 0)
+                tp = torch.sum(pred_probs[:, c] * targets_onehot[:, c])
+                fp = torch.sum(pred_probs[:, c] * (1 - targets_onehot[:, c]))
+                fn = torch.sum((1 - pred_probs[:, c]) * targets_onehot[:, c])
+                dice = (2 * tp + 1e-7) / (2 * tp + fp + fn + 1e-7)
+                class_dsc.append(dice)
+            dsc = torch.mean(torch.stack(class_dsc))
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val_dsc', dsc, on_step=False, on_epoch=True, prog_bar=True)
 
@@ -292,7 +348,6 @@ class LitModel(pl.LightningModule):
             preds.append(outs[0])
             targets.append(outs[1])
             input = self.validation_step_inputs[i]
-            input = torch.sigmoid(input)
 
             # MULTICLASS: Apply appropriate activation and get predictions
             if self.num_classes == 1:
@@ -306,18 +361,31 @@ class LitModel(pl.LightningModule):
 
             self.save_overlay_images(input, pred, target, "test_"+str(i))
 
-        preds = torch.cat(preds).cpu()
-        targets = torch.cat(targets).cpu()
+        preds = torch.cat(preds)
+        targets = torch.cat(targets)
 
         test_loss = self.criterion(preds, targets)
 
-        # MULTICLASS: Use appropriate activation for metrics
+        # MULTICLASS: Compute metrics using per-class scores
         if self.num_classes == 1:
             activation = 'sigmoid'
+            test_dsc = smp_utils.metrics.Fscore(activation=activation)(preds.cpu(), targets.cpu())
         else:
-            activation = 'softmax2d'
+            # For multiclass, compute per-class Dice and average (excluding background)
+            # Convert predictions to probabilities
+            pred_probs = torch.softmax(preds, dim=1)  # (N, C, H, W)
+            # Convert targets to one-hot encoding
+            targets_onehot = F.one_hot(targets.long(), num_classes=self.num_classes).permute(0, 3, 1, 2).float()  # (N, C, H, W)
 
-        test_dsc = smp_utils.metrics.Fscore(activation=activation)(preds, targets)
+            # Compute Dice per class
+            class_dsc = []
+            for c in range(1, self.num_classes):  # Skip background (class 0)
+                tp = torch.sum(pred_probs[:, c] * targets_onehot[:, c])
+                fp = torch.sum(pred_probs[:, c] * (1 - targets_onehot[:, c]))
+                fn = torch.sum((1 - pred_probs[:, c]) * targets_onehot[:, c])
+                dice = (2 * tp + 1e-7) / (2 * tp + fp + fn + 1e-7)
+                class_dsc.append(dice)
+            test_dsc = torch.mean(torch.stack(class_dsc))
         self.log('test_loss', test_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('test_dsc', test_dsc, on_step=False, on_epoch=True, prog_bar=True)
 
