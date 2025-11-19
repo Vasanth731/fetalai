@@ -104,7 +104,7 @@ def save_detections_to_csv(data, csv_filename="detections.csv"):
 if __name__ == "__main__":
     # location of image folder
     data_inst = detect_all(
-        data_root="/home/htic/vasanth/FetalCLIP/data2/5plusextracls_inhouse/inhouse_brain_transthalamic",  # dataset/images/AC
+        data_root="/home/htic/fetalai_data/vasanth/datasets_to_work_with/retro/with_annotation_retro1_2/BPD",  # dataset/images/AC
         yolo_weight="yolov4-tiny-arrowhead.weights",
         yolo_cfg="yolov4-tiny-arrowhead.cfg",
         num_points = 4,

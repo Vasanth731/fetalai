@@ -440,8 +440,8 @@ if __name__ == "__main__":
         # Assess good quality image
         print("\n" + "="*60)
         print("="*60)
-        assess_image_quality('/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/02_BPD_HC_Transthalamic/INDTNCHE0100195_visit_1_Head_1_Transthalamic plane_1.png', '/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/bpd/51.png')
-
+        # assess_image_quality('/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/02_BPD_HC_Transthalamic/INDTNCHE0100195_visit_1_Head_1_Transthalamic plane_1.png', '/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/bpd/51.png')
+        assess_image_quality('/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/02_BPD_HC_Transthalamic/INDTNCHE0100195_visit_1_Head_1_Transthalamic plane_1.png', '/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/02_BPD_HC_Transthalamic/INDTNCHE0100150_visit_5_Head_1_Transthalamic plane_1.png')
 
     elif len(sys.argv) == 2:
         # No-reference only
