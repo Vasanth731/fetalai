@@ -348,7 +348,7 @@ class YNet(nn.Module):
         return fc, out
 
 
-# inference for no marking images
+################################### inference for no marking images ##########################################
 # ---------------- CONFIG ----------------
 input_channels = 1
 output_channels = 64
@@ -358,8 +358,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------------- LOAD MODEL ----------------
 model = YNet(input_channels=input_channels, output_channels=output_channels, n_class=n_class)
-# model.load_state_dict(torch.load("/home/htic/vasanth/fetalai_project/weights/fuvai_weights.pt", map_location=device))
-model.load_state_dict(torch.load("/home/htic/vasanth/fetalai_project/weights/fetalnet/finetuned_multicls/output/best_model.pt", map_location=device))
+model.load_state_dict(torch.load("/home/htic/vasanth/fetalai_project/weights/fetalnet/pretrained/fuvai_weights.pt", map_location=device))
+# model.load_state_dict(torch.load("/home/htic/vasanth/fetalai_project/weights/fetalnet/finetuned_multicls/output_precise_3cls/final_model.pt", map_location=device))
 model = model.to(device)
 model.eval()  # start in eval mode
 
@@ -743,8 +743,34 @@ def detect_arrowhead(path, net, conf=0.5):
     return img, locs
 
 
-def detect_all(data_root, yolo_weight, yolo_cfg, num_points, dest="dataset/masks/AC", save_figs=False):
-    imgs = os.listdir(data_root)
+def detect_all(data_root, yolo_weight, yolo_cfg, num_points, dest="out_yolo", save_figs=False, single_image=False):
+    """
+    Detect arrowheads using YOLO on either a single image or a folder of images.
+
+    Args:
+        data_root: Path to a folder containing images OR path to a single image
+        yolo_weight: Path to YOLO weights file
+        yolo_cfg: Path to YOLO config file
+        num_points: Expected number of arrowhead points
+        dest: Output directory for saving results
+        save_figs: Whether to save detection visualizations
+        single_image: If True, data_root is treated as a single image path
+
+    Returns:
+        For single_image=True: tuple of (annotated_img, locs, filename)
+        For single_image=False: dictionary of {filename: locs}
+    """
+    # Check if input is a single image
+    if single_image or os.path.isfile(data_root):
+        single_image = True
+        imgs = [os.path.basename(data_root)]
+        img_dir = os.path.dirname(data_root)
+        if img_dir == "":
+            img_dir = "."
+    else:
+        imgs = os.listdir(data_root)
+        img_dir = data_root
+
     if save_figs:
         os.makedirs(dest, exist_ok=True)
         os.makedirs(os.path.join(dest, "bad"), exist_ok=True)
@@ -756,18 +782,27 @@ def detect_all(data_root, yolo_weight, yolo_cfg, num_points, dest="dataset/masks
 
     data = {}
     for x in imgs:
-        path = os.path.join(data_root, x)
+        path = os.path.join(img_dir, x)
         img, locs = detect_arrowhead(path, net)
-        
+
         if save_figs:
             if locs == None or len(locs) != num_points:
                 cv2.imwrite(os.path.join(dest, "bad", x), img)
             else:
                 cv2.imwrite(os.path.join(dest, "good", x), img)
-        
+
         if locs is not None and len(locs)==num_points:
             data[x] = locs
-    return data
+
+    # Return different formats based on single_image mode
+    if single_image:
+        filename = imgs[0]
+        if filename in data:
+            return img, data[filename], filename
+        else:
+            return img, None, filename
+    else:
+        return data
 
 
 def save_detections_to_csv(data, csv_filename="detections.csv"):
@@ -780,7 +815,7 @@ def save_detections_to_csv(data, csv_filename="detections.csv"):
             writer.writerow([filename, coordinates])
 
 
-######################################33
+############################################################################
 
 """
 Image Quality Assessment for Fetal Ultrasound Images
@@ -803,117 +838,6 @@ from scipy.ndimage import convolve
 from scipy.special import gamma
 import warnings
 warnings.filterwarnings('ignore')
-
-
-# ======================== FULL-REFERENCE METHODS ========================
-
-def calculate_ssim(reference_img, test_img):
-    """
-    Calculate Structural Similarity Index (SSIM)
-
-    Args:
-        reference_img: Reference/ground truth image
-        test_img: Test/degraded image
-
-    Returns:
-        float: SSIM value in range [-1, 1], where 1 means identical images
-
-    Quality Interpretation:
-        > 0.9  : Excellent quality
-        0.7-0.9: Good quality
-        0.5-0.7: Fair quality
-        < 0.5  : Poor quality
-    """
-    # Convert to grayscale if needed
-    if len(reference_img.shape) == 3:
-        reference_gray = cv2.cvtColor(reference_img, cv2.COLOR_BGR2GRAY)
-    else:
-        reference_gray = reference_img
-
-    if len(test_img.shape) == 3:
-        test_gray = cv2.cvtColor(test_img, cv2.COLOR_BGR2GRAY)
-    else:
-        test_gray = test_img
-
-    # Calculate SSIM
-    score, _ = ssim(reference_gray, test_gray, full=True)
-
-    return score
-
-
-def calculate_fsim(reference_img, test_img):
-    """
-    Calculate Feature Similarity Index (FSIM)
-
-    Args:
-        reference_img: Reference/ground truth image
-        test_img: Test/degraded image
-
-    Returns:
-        float: FSIM value in range [0, 1], where 1 means identical images
-
-    Quality Interpretation:
-        > 0.9  : Excellent quality
-        0.8-0.9: Good quality
-        0.6-0.8: Fair quality
-        < 0.6  : Poor quality
-    """
-    # Convert to grayscale if needed
-    if len(reference_img.shape) == 3:
-        img1 = cv2.cvtColor(reference_img, cv2.COLOR_BGR2GRAY)
-    else:
-        img1 = reference_img
-
-    if len(test_img.shape) == 3:
-        img2 = cv2.cvtColor(test_img, cv2.COLOR_BGR2GRAY)
-    else:
-        img2 = test_img
-
-    # Convert to float
-    img1 = img1.astype(np.float64)
-    img2 = img2.astype(np.float64)
-
-    # Constants
-    T1 = 0.85  # Constant for phase congruency
-    T2 = 160   # Constant for gradient magnitude
-
-    # Calculate gradient magnitude using Scharr operator
-    def gradient_magnitude(img):
-        gx = cv2.Scharr(img, cv2.CV_64F, 1, 0)
-        gy = cv2.Scharr(img, cv2.CV_64F, 0, 1)
-        return np.sqrt(gx**2 + gy**2)
-
-    # Calculate phase congruency (simplified version)
-    def phase_congruency_simple(img):
-        # Using edge detection as proxy for phase congruency
-        edges = cv2.Canny(img.astype(np.uint8), 50, 150)
-        return edges.astype(np.float64) / 255.0
-
-    # Get gradient magnitudes
-    gm1 = gradient_magnitude(img1)
-    gm2 = gradient_magnitude(img2)
-
-    # Get phase congruency
-    pc1 = phase_congruency_simple(img1)
-    pc2 = phase_congruency_simple(img2)
-
-    # Calculate similarity for gradient magnitude
-    S_gm = (2 * gm1 * gm2 + T2) / (gm1**2 + gm2**2 + T2)
-
-    # Calculate similarity for phase congruency
-    S_pc = (2 * pc1 * pc2 + T1) / (pc1**2 + pc2**2 + T1)
-
-    # Combine similarities
-    S_L = S_pc * S_gm
-
-    # Calculate maximum of phase congruency maps
-    PC_m = np.maximum(pc1, pc2)
-
-    # Calculate FSIM
-    fsim = np.sum(S_L * PC_m) / np.sum(PC_m + 1e-10)
-
-    return fsim
-
 
 # ======================== NO-REFERENCE METHODS ========================
 
@@ -1078,27 +1002,8 @@ def interpret_quality(metric_name, score):
     """
     Interpret the quality score and provide a description
     """
-    if metric_name == "SSIM":
-        if score > 0.9:
-            return "Excellent quality"
-        elif score > 0.7:
-            return "Good quality"
-        elif score > 0.5:
-            return "Fair quality"
-        else:
-            return "Poor quality"
 
-    elif metric_name == "FSIM":
-        if score > 0.9:
-            return "Excellent quality"
-        elif score > 0.8:
-            return "Good quality"
-        elif score > 0.6:
-            return "Fair quality"
-        else:
-            return "Poor quality"
-
-    elif metric_name == "BRISQUE":
+    if metric_name == "BRISQUE":
         if score < 20:
             return "Excellent quality"
         elif score < 40:
@@ -1159,33 +1064,6 @@ def assess_image_quality(test_img_path, reference_img_path=None):
     print("="*60)
     print(f"Test Image: {test_img_path}")
 
-    # Full-Reference Metrics (if reference image is provided)
-    if reference_img_path:
-        reference_img = cv2.imread(reference_img_path)
-        if reference_img is None:
-            print(f"Error: Could not load reference image from {reference_img_path}")
-        else:
-            print(f"Reference Image: {reference_img_path}")
-            print("\n" + "="*60)
-            print("FULL-REFERENCE METRICS")
-            print("="*60)
-
-            # Calculate SSIM
-            ssim_score = calculate_ssim(reference_img, test_img)
-            interpretation = interpret_quality("SSIM", ssim_score)
-            print_results("SSIM (Structural Similarity Index)",
-                         ssim_score,
-                         "[-1, 1] (Higher is better)",
-                         interpretation)
-
-            # Calculate FSIM
-            fsim_score = calculate_fsim(reference_img, test_img)
-            interpretation = interpret_quality("FSIM", fsim_score)
-            print_results("FSIM (Feature Similarity Index)",
-                         fsim_score,
-                         "[0, 1] (Higher is better)",
-                         interpretation)
-
     # No-Reference Metrics
     print("\n" + "="*60)
     print("NO-REFERENCE METRICS")
@@ -1217,14 +1095,17 @@ def assess_image_quality(test_img_path, reference_img_path=None):
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
 
-    input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/03_Femur_Length"
-    output_base = "outfl"
+    # Single image inference
+    input_image = "51.png"
+    output_base = "output_single_image2"
+
+    # Specify measurement type: "02_bpd_hc_transthalamic", "01_abdominal_circumference", or "03_femur_length"
+    measurement_type = "02_bpd_hc_transthalamic"  # Change this based on your image type
 
     os.makedirs(output_base, exist_ok=True)
 
-    # Extract measurement type from input folder path
-    measurement_type = os.path.basename(input_folder.rstrip("/")).lower()
-    print(f"Detected measurement type: {measurement_type}")
+    print(f"Processing single image: {input_image}")
+    print(f"Measurement type: {measurement_type}")
 
     contour_dir = os.path.join(output_base, "contour_overlay")
     mask_overlay_dir = os.path.join(output_base, "mask_overlay")
@@ -1236,43 +1117,29 @@ if __name__ == "__main__":
     for p in [contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir]:
         os.makedirs(p, exist_ok=True)
 
-    valid_exts = (".png", ".jpg", ".jpeg", ".bmp")
-    image_paths = sorted([os.path.join(input_folder, f) for f in os.listdir(input_folder) if f.lower().endswith(valid_exts)])
-
-    for img_path in tqdm(image_paths, desc="Processing images"):
-        process_image(img_path, contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir, measurement_type)
-
-###################################################################################
-
-    data_inst = detect_all(
-        data_root="/home/htic/fetalai_data/vasanth/datasets_to_work_with/retro/with_annotation_retro1_2/BPD",  # dataset/images/AC
-        yolo_weight="yolo_arrowhead/yolov4-tiny-arrowhead.weights",
-        yolo_cfg="yolo_arrowhead/yolov4-tiny-arrowhead.cfg",
-        num_points = 4,
-        save_figs=True)
-    
-    print(f"{type(data_inst)}")
-    
-    save_detections_to_csv(data_inst, "dataset/masks/detections_AC.csv")
-
-#################################################################################
-
-    # Check command line arguments
-    if len(sys.argv) < 2:
-        print("Please provide at least one image path.")
-        print("Example: python image_quality_assessment.py test_image.png [reference_image.png]")
-
-        # Assess good quality image
-        print("\n" + "="*60)
-        print("="*60)
-        # assess_image_quality('/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/02_BPD_HC_Transthalamic/INDTNCHE0100195_visit_1_Head_1_Transthalamic plane_1.png', '/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/bpd/51.png')
-        assess_image_quality('/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/02_BPD_HC_Transthalamic/INDTNCHE0100195_visit_1_Head_1_Transthalamic plane_1.png', '/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/02_BPD_HC_Transthalamic/INDTNCHE0100150_visit_5_Head_1_Transthalamic plane_1.png')
-
-    elif len(sys.argv) == 2:
-        # No-reference only
-        assess_image_quality(sys.argv[1])
+    # Process single image
+    if os.path.exists(input_image):
+        process_image(input_image, contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir, measurement_type)
+        print(f"\nProcessing complete! Results saved to '{output_base}' directory")
     else:
-        # Full-reference + No-reference
-        assess_image_quality(sys.argv[1], sys.argv[2])
+        print(f"Error: Image file '{input_image}' not found!")
+
+    # ========================================================================
+    # Optional: Uncomment below sections if you need arrowhead detection or IQA
+    # ========================================================================
+
+
+    img, locs, filename = detect_all(
+        data_root="51.png",
+        yolo_weight="/home/htic/vasanth/fetalai_project/fetalai/yolo_arrowhead/yolov4-tiny-arrowhead.weights",
+        yolo_cfg="/home/htic/vasanth/fetalai_project/fetalai/yolo_arrowhead/yolov4-tiny-arrowhead.cfg",
+        num_points=4,
+        save_figs=True,
+        dest="output_yolo_single"
+    )
+
+
+    # Image Quality Assessment
+    assess_image_quality(input_image)
 
 
