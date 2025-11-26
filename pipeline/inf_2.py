@@ -10,8 +10,11 @@ import torch.nn.functional as F
 import time
 import numpy as np
 import csv
+from scipy.special import gamma
+import warnings
+warnings.filterwarnings('ignore')
 
-# model for no marking images
+################################# model for no marking images #############################################
 class ConvLSTMCell(nn.Module):
 
     def __init__(self, input_size, input_dim, hidden_dim, kernel_size, bias):
@@ -606,6 +609,97 @@ def draw_arrowhead_markers(rgb_image, binary_mask):
     return drawing
 
 
+def calculate_iou(mask1, mask2):
+    """
+    Calculate Intersection over Union (IoU) between two binary masks.
+
+    Args:
+        mask1: First binary mask (numpy array)
+        mask2: Second binary mask (numpy array)
+
+    Returns:
+        float: IoU score between 0 and 1
+    """
+    # Ensure masks are binary
+    mask1_binary = (mask1 > 0).astype(np.uint8)
+    mask2_binary = (mask2 > 0).astype(np.uint8)
+
+    # Calculate intersection and union
+    intersection = np.logical_and(mask1_binary, mask2_binary).sum()
+    union = np.logical_or(mask1_binary, mask2_binary).sum()
+
+    # Avoid division by zero
+    if union == 0:
+        return 0.0
+
+    iou = intersection / union
+    return iou
+
+
+def calculate_dice_coefficient(mask1, mask2):
+    """
+    Calculate Dice coefficient between two binary masks.
+
+    Args:
+        mask1: First binary mask (numpy array)
+        mask2: Second binary mask (numpy array)
+
+    Returns:
+        float: Dice coefficient between 0 and 1
+    """
+    # Ensure masks are binary
+    mask1_binary = (mask1 > 0).astype(np.uint8)
+    mask2_binary = (mask2 > 0).astype(np.uint8)
+
+    # Calculate intersection
+    intersection = np.logical_and(mask1_binary, mask2_binary).sum()
+
+    # Calculate Dice coefficient
+    dice = (2.0 * intersection) / (mask1_binary.sum() + mask2_binary.sum())
+
+    return dice
+
+
+def visualize_overlap(image, mask1, mask2, output_path):
+    """
+    Visualize the overlap between two masks.
+    - Green: mask1 only
+    - Red: mask2 only
+    - Yellow: overlap between mask1 and mask2
+
+    Args:
+        image: Original image
+        mask1: First binary mask (ellipse from arrowhead detection)
+        mask2: Second binary mask (segmentation mask)
+        output_path: Path to save the visualization
+    """
+    # Create a color overlay
+    overlay = np.zeros_like(image)
+
+    # Ensure masks are binary
+    mask1_binary = (mask1 > 0).astype(np.uint8)
+    mask2_binary = (mask2 > 0).astype(np.uint8)
+
+    # Compute overlap
+    overlap = np.logical_and(mask1_binary, mask2_binary)
+    mask1_only = np.logical_and(mask1_binary, np.logical_not(mask2_binary))
+    mask2_only = np.logical_and(mask2_binary, np.logical_not(mask1_binary))
+
+    # Apply colors
+    overlay[mask1_only] = [0, 255, 0]  # Green for ellipse only
+    overlay[mask2_only] = [0, 0, 255]  # Red for segmentation only
+    overlay[overlap] = [0, 255, 255]   # Yellow for overlap
+
+    # Blend with original image
+    result = cv2.addWeighted(image, 0.6, overlay, 0.4, 0)
+
+    # Save the result
+    cv2.imwrite(output_path, result)
+    print(f"Overlap visualization saved to: {output_path}")
+
+    return result
+
+
 # ---------------- PROCESS IMAGE ----------------
 def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir, measurement_type):
     filename = os.path.basename(image_path)
@@ -675,9 +769,14 @@ def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skelet
     cv2.imwrite(os.path.join(drawing_dir, scored_filename), drawing)
     cv2.imwrite(os.path.join(skeleton_overlay_dir, scored_filename), skeleton_overlay)
 
+    # Resize binary_mask to original image size for comparison
+    binary_mask_full_size = cv2.resize(binary_mask, (OG_Shape[1], OG_Shape[0]), interpolation=cv2.INTER_NEAREST)
+
+    return binary_mask_full_size, OG_image, seg_confidence, seg_uncertainty_mean
 
 
-# model and inference for marked images
+
+####################################### model and inference for marked images ####################################
 def detect_arrowhead(path, net, conf=0.5):
 
     # determine the output layers
@@ -808,25 +907,7 @@ def save_detections_to_csv(data, csv_filename="detections.csv"):
             writer.writerow([filename, coordinates])
 
 
-############################################################################
-
-"""
-Image Quality Assessment for Fetal Ultrasound Images
-This script implements No-Reference metrics specifically useful for fetal ultrasound imaging.
-
-No-Reference Methods:
-    1. BRISQUE (Blind/Referenceless Image Spatial Quality Evaluator) - Range: [0, 100], Lower is better
-    2. NIQE (Natural Image Quality Evaluator) - Range: [0, ∞], Lower is better
-"""
-
-import sys
-import numpy as np
-import cv2
-from scipy.special import gamma
-import warnings
-warnings.filterwarnings('ignore')
-
-# ======================== NO-REFERENCE METHODS ========================
+#################################### evaluation metrics for imagw quality ##################################
 
 def calculate_brisque(img):
     """
@@ -1030,7 +1111,6 @@ def print_results(metric_name, score, score_range, interpretation):
     print(f"{'='*60}")
 
 
-# ======================== MAIN FUNCTION (MODIFIED TO RETURN SCORES) ========================
 
 def assess_image_quality(test_img_path, reference_img_path=None):
     """
@@ -1085,6 +1165,7 @@ def assess_image_quality(test_img_path, reference_img_path=None):
 def draw_ellipse_from_4_points(image, points, output_path):
     """
     Draw an ellipse from 4 detected arrowhead points with major and minor axes.
+    Creates a semi-transparent overlay of the ellipse on the original image.
 
     Args:
         image: Original image (already loaded)
@@ -1092,19 +1173,26 @@ def draw_ellipse_from_4_points(image, points, output_path):
         output_path: Path to save the output image
 
     Returns:
-        Image with ellipse and axes drawn
+        tuple: (img_with_ellipse, ellipse_mask)
+            - img_with_ellipse: Image with ellipse and axes drawn as overlay
+            - ellipse_mask: Binary mask of the ellipse
     """
+    # Create a copy of the original image
     img_with_ellipse = image.copy()
+
+    # Create an overlay for the filled ellipse
+    overlay = image.copy()
 
     # Convert points to numpy array
     points_array = np.array(points, dtype=np.float32)
 
     # To use cv2.fitEllipse, we need at least 5 points
-    # Add the centroid of the 4 points as the 5th point
-    centroid = np.mean(points_array, axis=0)
-    points_with_center = np.vstack([points_array, centroid])
+    # Add a point that is 5 pixels away from the first known point as the 5th point
+    # Offset by 5 pixels in the x-direction from the first point
+    fifth_point = points_array[0] + np.array([5, 0], dtype=np.float32)
+    points_with_center = np.vstack([points_array, fifth_point])
 
-    # Fit ellipse to the 5 points (4 detected + centroid)
+    # Fit ellipse to the 5 points (4 detected + fifth point offset by 5 pixels)
     # Reshape for cv2.fitEllipse format: (N, 1, 2)
     points_for_fitting = points_with_center.reshape(-1, 1, 2).astype(np.int32)
     ellipse = cv2.fitEllipse(points_for_fitting)
@@ -1119,10 +1207,22 @@ def draw_ellipse_from_4_points(image, points, output_path):
     major_axis = d1
     minor_axis = d2
 
-    # Draw the ellipse
+    print(f"Ellipse parameters - Center: ({xc:.2f}, {yc:.2f}), Major axis: {major_axis:.2f}, Minor axis: {minor_axis:.2f}, Angle: {angle:.2f}°")
+
+    # Create a binary mask of the ellipse
+    ellipse_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    cv2.ellipse(ellipse_mask, ellipse, 255, -1)  # Filled ellipse in white
+
+    # Draw a filled semi-transparent ellipse on the overlay
+    cv2.ellipse(overlay, ellipse, (0, 255, 0), -1)  # Filled ellipse in green
+
+    # Blend the overlay with the original image (30% opacity for the filled ellipse)
+    img_with_ellipse = cv2.addWeighted(overlay, 0.3, img_with_ellipse, 0.7, 0)
+
+    # Draw the ellipse outline (solid line for clear boundary)
     cv2.ellipse(img_with_ellipse, ellipse, (0, 255, 0), 3)
 
-    # Calculate endpoints of major and minor axes
+    # Calculate endpoints of major and minor axes using the fitted ellipse parameters
     theta = np.radians(angle)
 
     # Major axis endpoints
@@ -1137,21 +1237,26 @@ def draw_ellipse_from_4_points(image, points, output_path):
     pt1_minor = (int(xc + dx_minor), int(yc + dy_minor))
     pt2_minor = (int(xc - dx_minor), int(yc - dy_minor))
 
-    # Draw major axis (blue)
+    # Draw major axis (blue) with thicker line
     cv2.line(img_with_ellipse, pt1_major, pt2_major, (255, 0, 0), 3)
 
-    # Draw minor axis (red)
+    # Draw minor axis (red) with thicker line
     cv2.line(img_with_ellipse, pt1_minor, pt2_minor, (0, 0, 255), 3)
 
-    # Draw the detected points
+    # Draw center point
+    cv2.circle(img_with_ellipse, (int(xc), int(yc)), 5, (255, 255, 0), -1)
+
+    # Draw the detected arrowhead points
     for pt in points:
         cv2.circle(img_with_ellipse, (int(pt[0]), int(pt[1])), 8, (0, 255, 255), -1)
 
     # Save the image
     cv2.imwrite(output_path, img_with_ellipse)
-    print(f"Ellipse with axes overlay saved to: {output_path}")
+    print(f"Ellipse overlay saved to: {output_path}")
+    print(f"  - Major axis (blue line): {major_axis:.2f} pixels")
+    print(f"  - Minor axis (red line): {minor_axis:.2f} pixels")
 
-    return img_with_ellipse
+    return img_with_ellipse, ellipse_mask
 
 
 def draw_line_from_2_points(image, points, output_path):
@@ -1184,18 +1289,408 @@ def draw_line_from_2_points(image, points, output_path):
 
     return img_with_line
 
+def process_folder(input_folder, output_base, measurement_type, brisque_threshold=60, niqe_threshold=7,
+                   seg_confidence_threshold=0.5, seg_uncertainty_threshold=0.1):
+    """
+    Process all images in a folder through the complete pipeline.
+
+    Args:
+        input_folder: Path to folder containing input images
+        output_base: Base directory for all outputs
+        measurement_type: Type of measurement ("02_bpd_hc_transthalamic", "01_abdominal_circumference", "03_femur_length")
+        brisque_threshold: Maximum acceptable BRISQUE score (default: 60)
+        niqe_threshold: Maximum acceptable NIQE score (default: 7)
+        seg_confidence_threshold: Minimum segmentation confidence (default: 0.5)
+        seg_uncertainty_threshold: Maximum segmentation uncertainty (default: 0.1)
+
+    Returns:
+        dict: Summary statistics of processing results
+    """
+    # YOLO configuration
+    yolo_weight = "/home/htic/vasanth/fetalai_project/fetalai/yolo_arrowhead/yolov4-tiny-arrowhead.weights"
+    yolo_cfg = "/home/htic/vasanth/fetalai_project/fetalai/yolo_arrowhead/yolov4-tiny-arrowhead.cfg"
+
+    # Create main output directory
+    os.makedirs(output_base, exist_ok=True)
+
+    # Get all image files from input folder
+    supported_formats = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
+    image_files = []
+    for file in os.listdir(input_folder):
+        if any(file.lower().endswith(fmt) for fmt in supported_formats):
+            image_files.append(os.path.join(input_folder, file))
+
+    if len(image_files) == 0:
+        print(f"No images found in {input_folder}")
+        return {}
+
+    print(f"\nFound {len(image_files)} images to process")
+    print(f"Measurement type: {measurement_type}")
+    print(f"BRISQUE Threshold: {brisque_threshold}")
+    print(f"NIQE Threshold: {niqe_threshold}")
+    print(f"Segmentation Confidence Threshold: {seg_confidence_threshold}")
+    print(f"Segmentation Uncertainty Threshold: {seg_uncertainty_threshold}")
+    print(f"Output directory: {output_base}\n")
+
+    # Statistics tracking
+    stats = {
+        'total_images': len(image_files),
+        'quality_pass': 0,
+        'quality_fail': 0,
+        'arrowheads_detected': 0,
+        'no_arrowheads': 0,
+        'ellipse_drawn': 0,
+        'line_drawn': 0,
+        'processing_errors': 0,
+        'above_threshold': 0,
+        'below_threshold': 0
+    }
+
+    # Process each image
+    for idx, image_path in enumerate(tqdm(image_files, desc="Processing images")):
+        try:
+            filename = os.path.basename(image_path)
+            print(f"\n{'='*80}")
+            print(f"Processing image {idx+1}/{len(image_files)}: {filename}")
+            print(f"{'='*80}")
+
+            # Step 1: Assess Image Quality
+            print("\n" + "="*60)
+            print("STEP 1: ASSESSING IMAGE QUALITY")
+            print("="*60)
+            brisque_score, niqe_score = assess_image_quality(image_path)
+
+            if brisque_score is None or niqe_score is None:
+                print(f"Error: Could not assess image quality for {filename}. Skipping.")
+                stats['processing_errors'] += 1
+                continue
+
+            # Check quality thresholds
+            quality_pass = True
+            if brisque_score > brisque_threshold:
+                print(f"\nWarning: BRISQUE score ({brisque_score:.4f}) exceeds threshold ({brisque_threshold})")
+                quality_pass = False
+            else:
+                print(f"\nBRISQUE score ({brisque_score:.4f}) passes threshold ({brisque_threshold})")
+
+            if niqe_score > niqe_threshold:
+                print(f"Warning: NIQE score ({niqe_score:.4f}) exceeds threshold ({niqe_threshold})")
+                quality_pass = False
+            else:
+                print(f"NIQE score ({niqe_score:.4f}) passes threshold ({niqe_threshold})")
+
+            if quality_pass:
+                stats['quality_pass'] += 1
+                print("\nImage quality is acceptable. Proceeding with detection.")
+            else:
+                stats['quality_fail'] += 1
+                print("\nImage quality is below acceptable thresholds.")
+                print("Continuing with processing anyway...")
+
+            # Step 2: Detect Arrowheads
+            print("\n" + "="*60)
+            print("STEP 2: DETECTING ARROWHEADS")
+            print("="*60)
+
+            img, locs, _ = detect_all(
+                data_root=image_path,
+                yolo_weight=yolo_weight,
+                yolo_cfg=yolo_cfg,
+                num_points=4,
+                save_figs=True,
+                dest=os.path.join(output_base, "yolo_detection"),
+                single_image=True
+            )
+
+            if locs is None:
+                stats['no_arrowheads'] += 1
+                print("\nNo arrowheads detected!")
+                print("="*60)
+                print("STEP 3: RUNNING PROCESS_IMAGE FOR NO-MARKING SCENARIO")
+                print("="*60)
+
+                # Run process_image to get segmentation metrics
+                # Create temporary output directories to get metrics first
+                temp_contour_dir = os.path.join(output_base, "temp", "contour_overlay")
+                temp_mask_overlay_dir = os.path.join(output_base, "temp", "mask_overlay")
+                temp_drawing_dir = os.path.join(output_base, "temp", "drawing")
+                temp_skeleton_overlay_dir = os.path.join(output_base, "temp", "skeleton")
+                temp_colormap_overlay_dir = os.path.join(output_base, "temp", "colormap_overlay")
+                temp_ellipse_axis_overlay_dir = os.path.join(output_base, "temp", "ellipse_axis_overlay")
+
+                for p in [temp_contour_dir, temp_mask_overlay_dir, temp_drawing_dir, temp_skeleton_overlay_dir,
+                          temp_colormap_overlay_dir, temp_ellipse_axis_overlay_dir]:
+                    os.makedirs(p, exist_ok=True)
+
+                # Process image without markers to get metrics
+                _, _, seg_confidence, seg_uncertainty = process_image(
+                    image_path, temp_contour_dir, temp_mask_overlay_dir, temp_drawing_dir,
+                    temp_skeleton_overlay_dir, temp_colormap_overlay_dir, temp_ellipse_axis_overlay_dir,
+                    measurement_type
+                )
+
+                # Determine if image meets threshold
+                meets_threshold = (seg_confidence >= seg_confidence_threshold and
+                                 seg_uncertainty <= seg_uncertainty_threshold)
+
+                # Choose output folder based on threshold
+                if meets_threshold:
+                    threshold_folder = "above_threshold"
+                    stats['above_threshold'] += 1
+                    print(f"\nSegmentation meets threshold criteria:")
+                    print(f"  Confidence: {seg_confidence:.4f} >= {seg_confidence_threshold}")
+                    print(f"  Uncertainty: {seg_uncertainty:.4f} <= {seg_uncertainty_threshold}")
+                else:
+                    threshold_folder = "below_threshold"
+                    stats['below_threshold'] += 1
+                    print(f"\nSegmentation below threshold criteria:")
+                    print(f"  Confidence: {seg_confidence:.4f} < {seg_confidence_threshold} OR")
+                    print(f"  Uncertainty: {seg_uncertainty:.4f} > {seg_uncertainty_threshold}")
+
+                # Create final output directories based on threshold
+                contour_dir = os.path.join(output_base, threshold_folder, "contour_overlay")
+                mask_overlay_dir = os.path.join(output_base, threshold_folder, "mask_overlay")
+                drawing_dir = os.path.join(output_base, threshold_folder, "drawing")
+                skeleton_overlay_dir = os.path.join(output_base, threshold_folder, "skeleton")
+                colormap_overlay_dir = os.path.join(output_base, threshold_folder, "colormap_overlay")
+                ellipse_axis_overlay_dir = os.path.join(output_base, threshold_folder, "ellipse_axis_overlay")
+
+                for p in [contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir,
+                          colormap_overlay_dir, ellipse_axis_overlay_dir]:
+                    os.makedirs(p, exist_ok=True)
+
+                # Process image again to save to correct directories
+                process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir,
+                             skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir,
+                             measurement_type)
+
+                # Clean up temp directory
+                import shutil
+                shutil.rmtree(os.path.join(output_base, "temp"), ignore_errors=True)
+
+                print(f"\nNo-marking processing complete for {filename}")
+                print(f"Saved to: {threshold_folder}/")
+
+            else:
+                stats['arrowheads_detected'] += 1
+                print(f"\nArrowheads detected at locations: {locs}")
+
+                # Step 3: Run process_image first to get segmentation metrics
+                print("\n" + "="*60)
+                print("STEP 3: RUNNING PROCESS_IMAGE FOR SEGMENTATION")
+                print("="*60)
+
+                # Create temporary output directories to get metrics first
+                temp_contour_dir = os.path.join(output_base, "temp", "contour_overlay")
+                temp_mask_overlay_dir = os.path.join(output_base, "temp", "mask_overlay")
+                temp_drawing_dir = os.path.join(output_base, "temp", "drawing")
+                temp_skeleton_overlay_dir = os.path.join(output_base, "temp", "skeleton")
+                temp_colormap_overlay_dir = os.path.join(output_base, "temp", "colormap_overlay")
+                temp_ellipse_axis_overlay_dir = os.path.join(output_base, "temp", "ellipse_axis_overlay")
+
+                for p in [temp_contour_dir, temp_mask_overlay_dir, temp_drawing_dir, temp_skeleton_overlay_dir,
+                          temp_colormap_overlay_dir, temp_ellipse_axis_overlay_dir]:
+                    os.makedirs(p, exist_ok=True)
+
+                # Process image to get segmentation mask and metrics
+                seg_mask, seg_image, seg_confidence, seg_uncertainty = process_image(
+                    image_path, temp_contour_dir, temp_mask_overlay_dir, temp_drawing_dir,
+                    temp_skeleton_overlay_dir, temp_colormap_overlay_dir, temp_ellipse_axis_overlay_dir,
+                    measurement_type
+                )
+
+                # Determine if image meets threshold
+                meets_threshold = (seg_confidence >= seg_confidence_threshold and
+                                 seg_uncertainty <= seg_uncertainty_threshold)
+
+                # Choose output folder based on threshold
+                if meets_threshold:
+                    threshold_folder = "above_threshold"
+                    stats['above_threshold'] += 1
+                    print(f"\nSegmentation meets threshold criteria:")
+                    print(f"  Confidence: {seg_confidence:.4f} >= {seg_confidence_threshold}")
+                    print(f"  Uncertainty: {seg_uncertainty:.4f} <= {seg_uncertainty_threshold}")
+                else:
+                    threshold_folder = "below_threshold"
+                    stats['below_threshold'] += 1
+                    print(f"\nSegmentation below threshold criteria:")
+                    print(f"  Confidence: {seg_confidence:.4f} < {seg_confidence_threshold} OR")
+                    print(f"  Uncertainty: {seg_uncertainty:.4f} > {seg_uncertainty_threshold}")
+
+                # Step 4: Draw ellipse or line based on number of points
+                print("\n" + "="*60)
+                print("STEP 4: DRAWING OVERLAY BASED ON DETECTED POINTS")
+                print("="*60)
+
+                # Create output directory for marked overlays based on threshold
+                marked_overlay_dir = os.path.join(output_base, threshold_folder, "marked_overlay")
+                os.makedirs(marked_overlay_dir, exist_ok=True)
+
+                # Load the original image
+                original_image = cv2.imread(image_path)
+
+                if original_image is None:
+                    print(f"Error: Could not load image from {image_path}")
+                    stats['processing_errors'] += 1
+                    continue
+
+                output_filename = os.path.join(marked_overlay_dir, filename)
+
+                if len(locs) == 4:
+                    stats['ellipse_drawn'] += 1
+                    print(f"Drawing ellipse with major and minor axes from 4 points...")
+                    img_with_ellipse, ellipse_mask = draw_ellipse_from_4_points(original_image, locs, output_filename)
+
+                    # Step 5: Create final output directories based on threshold
+                    print("\n" + "="*60)
+                    print("STEP 5: SAVING SEGMENTATION OUTPUTS TO THRESHOLD FOLDERS")
+                    print("="*60)
+
+                    # Create final output directories for process_image based on threshold
+                    contour_dir = os.path.join(output_base, threshold_folder, "contour_overlay")
+                    mask_overlay_dir = os.path.join(output_base, threshold_folder, "mask_overlay")
+                    drawing_dir = os.path.join(output_base, threshold_folder, "drawing")
+                    skeleton_overlay_dir = os.path.join(output_base, threshold_folder, "skeleton")
+                    colormap_overlay_dir = os.path.join(output_base, threshold_folder, "colormap_overlay")
+                    ellipse_axis_overlay_dir = os.path.join(output_base, threshold_folder, "ellipse_axis_overlay")
+
+                    for p in [contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir,
+                              colormap_overlay_dir, ellipse_axis_overlay_dir]:
+                        os.makedirs(p, exist_ok=True)
+
+                    # Process image again to save to correct directories
+                    process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir,
+                                 skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir,
+                                 measurement_type)
+
+                    # Step 6: Compare masks and visualize overlap
+                    print("\n" + "="*60)
+                    print("STEP 6: COMPARING ELLIPSE AND SEGMENTATION MASKS")
+                    print("="*60)
+
+                    # Calculate overlap metrics
+                    iou_score = calculate_iou(ellipse_mask, seg_mask)
+                    dice_score = calculate_dice_coefficient(ellipse_mask, seg_mask)
+
+                    print(f"\nOverlap Metrics:")
+                    print(f"  IoU (Intersection over Union): {iou_score:.4f}")
+                    print(f"  Dice Coefficient: {dice_score:.4f}")
+                    print(f"\n  Interpretation:")
+                    if iou_score >= 0.7:
+                        print(f"    - Excellent agreement between ellipse and segmentation (IoU >= 0.7)")
+                    elif iou_score >= 0.5:
+                        print(f"    - Good agreement between ellipse and segmentation (IoU >= 0.5)")
+                    elif iou_score >= 0.3:
+                        print(f"    - Moderate agreement between ellipse and segmentation (IoU >= 0.3)")
+                    else:
+                        print(f"    - Poor agreement between ellipse and segmentation (IoU < 0.3)")
+
+                    # Visualize overlap in threshold-specific folder
+                    overlap_dir = os.path.join(output_base, threshold_folder, "overlap_comparison")
+                    os.makedirs(overlap_dir, exist_ok=True)
+                    overlap_output = os.path.join(overlap_dir, filename)
+                    visualize_overlap(original_image, ellipse_mask, seg_mask, overlap_output)
+
+                    print(f"\n  Color coding:")
+                    print(f"    - Green: Ellipse only (from arrowhead detection)")
+                    print(f"    - Red: Segmentation only (from process_image)")
+                    print(f"    - Yellow: Overlap (agreement between both methods)")
+                    print(f"{'='*60}")
+
+                elif len(locs) == 2:
+                    stats['line_drawn'] += 1
+                    print(f"Drawing straight line from 2 points...")
+                    draw_line_from_2_points(original_image, locs, output_filename)
+
+                    # Also save process_image outputs for line case
+                    contour_dir = os.path.join(output_base, threshold_folder, "contour_overlay")
+                    mask_overlay_dir = os.path.join(output_base, threshold_folder, "mask_overlay")
+                    drawing_dir = os.path.join(output_base, threshold_folder, "drawing")
+                    skeleton_overlay_dir = os.path.join(output_base, threshold_folder, "skeleton")
+                    colormap_overlay_dir = os.path.join(output_base, threshold_folder, "colormap_overlay")
+                    ellipse_axis_overlay_dir = os.path.join(output_base, threshold_folder, "ellipse_axis_overlay")
+
+                    for p in [contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir,
+                              colormap_overlay_dir, ellipse_axis_overlay_dir]:
+                        os.makedirs(p, exist_ok=True)
+
+                    # Process image to save to correct directories
+                    process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir,
+                                 skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir,
+                                 measurement_type)
+                else:
+                    print(f"Warning: Detected {len(locs)} points. Expected 2 or 4 points.")
+                    print(f"No overlay will be drawn for this case.")
+
+                # Clean up temp directory
+                import shutil
+                shutil.rmtree(os.path.join(output_base, "temp"), ignore_errors=True)
+
+                print(f"\nSaved all outputs to: {threshold_folder}/")
+
+            print(f"\n{'='*80}")
+            print(f"Completed processing {filename}")
+            print(f"{'='*80}\n")
+
+        except Exception as e:
+            print(f"\nError processing {filename}: {str(e)}")
+            stats['processing_errors'] += 1
+            continue
+
+    # Print summary statistics
+    print("\n" + "="*80)
+    print("BATCH PROCESSING COMPLETE - SUMMARY")
+    print("="*80)
+    print(f"Total images processed: {stats['total_images']}")
+    print(f"  - Quality passed: {stats['quality_pass']}")
+    print(f"  - Quality failed: {stats['quality_fail']}")
+    print(f"  - Arrowheads detected: {stats['arrowheads_detected']}")
+    print(f"  - No arrowheads: {stats['no_arrowheads']}")
+    print(f"  - Ellipses drawn: {stats['ellipse_drawn']}")
+    print(f"  - Lines drawn: {stats['line_drawn']}")
+    print(f"  - Processing errors: {stats['processing_errors']}")
+    print(f"\nSegmentation Threshold Results:")
+    print(f"  - Above threshold: {stats['above_threshold']}")
+    print(f"  - Below threshold: {stats['below_threshold']}")
+    print(f"\nAll outputs saved to: {output_base}")
+    print(f"  - Above threshold images: {output_base}/above_threshold/")
+    print(f"  - Below threshold images: {output_base}/below_threshold/")
+    print("="*80)
+
+    return stats
+
+
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
+    
+    import argparse
 
-    # Configuration
-    input_image = "ANID_1000.jpg"
-    output_base = "out"
-    measurement_type = "02_bpd_hc_transthalamic"  # Change this based on your image type
+    parser = argparse.ArgumentParser(description="Fetal Ultrasound Image Processing Pipeline")
+    parser.add_argument("--input", "-i", required=True, help="Path to input image or folder containing images")
+    parser.add_argument("--output", "-o", required=True, help="Output base directory for all results")
+    parser.add_argument("--measurement-type", "-m", required=True,
+                        choices=["01_abdominal_circumference", "02_bpd_hc_transthalamic", "03_femur_length"],
+                        help="Type of measurement to perform")
+    parser.add_argument("--brisque-threshold", type=float, default=60,
+                        help="BRISQUE quality threshold (default: 60)")
+    parser.add_argument("--niqe-threshold", type=float, default=7,
+                        help="NIQE quality threshold (default: 7)")
+    parser.add_argument("--seg-confidence-threshold", type=float, default=0.5,
+                        help="Minimum segmentation confidence threshold (default: 0.5)")
+    parser.add_argument("--seg-uncertainty-threshold", type=float, default=0.1,
+                        help="Maximum segmentation uncertainty threshold (default: 0.1)")
 
-    # Image Quality Thresholds
-    BRISQUE_THRESHOLD = 60  # Images with BRISQUE > 60 are considered poor quality
-    NIQE_THRESHOLD = 7      # Images with NIQE > 7 are considered poor quality
+    args = parser.parse_args()
+
+    # Configuration from command line
+    input_path = args.input
+    output_base = args.output
+    measurement_type = args.measurement_type
+    BRISQUE_THRESHOLD = args.brisque_threshold
+    NIQE_THRESHOLD = args.niqe_threshold
+    SEG_CONFIDENCE_THRESHOLD = args.seg_confidence_threshold
+    SEG_UNCERTAINTY_THRESHOLD = args.seg_uncertainty_threshold
 
     # YOLO configuration
     yolo_weight = "/home/htic/vasanth/fetalai_project/fetalai/yolo_arrowhead/yolov4-tiny-arrowhead.weights"
@@ -1203,113 +1698,204 @@ if __name__ == "__main__":
 
     os.makedirs(output_base, exist_ok=True)
 
-    print(f"Processing image: {input_image}")
-    print(f"Measurement type: {measurement_type}")
-    print(f"BRISQUE Threshold: {BRISQUE_THRESHOLD}")
-    print(f"NIQE Threshold: {NIQE_THRESHOLD}")
+    # Check if input is a file or directory
+    if os.path.isfile(input_path):
+        # Single image processing
+        input_image = input_path
+        print(f"Processing single image: {input_image}")
+        print(f"Measurement type: {measurement_type}")
+        print(f"BRISQUE Threshold: {BRISQUE_THRESHOLD}")
+        print(f"NIQE Threshold: {NIQE_THRESHOLD}")
 
-    # Step 1: Assess Image Quality
-    print("\n" + "="*60)
-    print("STEP 1: ASSESSING IMAGE QUALITY")
-    print("="*60)
-    brisque_score, niqe_score = assess_image_quality(input_image)
+        # Step 1: Assess Image Quality
+        print("\n" + "="*60)
+        print("STEP 1: ASSESSING IMAGE QUALITY")
+        print("="*60)
+        brisque_score, niqe_score = assess_image_quality(input_image)
 
-    if brisque_score is None or niqe_score is None:
-        print("Error: Could not assess image quality. Exiting.")
+        if brisque_score is None or niqe_score is None:
+            print("Error: Could not assess image quality. Exiting.")
+            exit(1)
+
+        # Check quality thresholds
+        quality_pass = True
+        if brisque_score > BRISQUE_THRESHOLD:
+            print(f"\nWarning: BRISQUE score ({brisque_score:.4f}) exceeds threshold ({BRISQUE_THRESHOLD})")
+            quality_pass = False
+        else:
+            print(f"\nBRISQUE score ({brisque_score:.4f}) passes threshold ({BRISQUE_THRESHOLD})")
+
+        if niqe_score > NIQE_THRESHOLD:
+            print(f"Warning: NIQE score ({niqe_score:.4f}) exceeds threshold ({NIQE_THRESHOLD})")
+            quality_pass = False
+        else:
+            print(f"NIQE score ({niqe_score:.4f}) passes threshold ({NIQE_THRESHOLD})")
+
+        if not quality_pass:
+            print("\nImage quality is below acceptable thresholds. Consider using a higher quality image.")
+            print("Continuing with processing anyway...")
+        else:
+            print("\nImage quality is acceptable. Proceeding with detection.")
+
+        # Step 2: Detect Arrowheads
+        print("\n" + "="*60)
+        print("STEP 2: DETECTING ARROWHEADS")
+        print("="*60)
+
+        img, locs, filename = detect_all(
+            data_root=input_image,
+            yolo_weight=yolo_weight,
+            yolo_cfg=yolo_cfg,
+            num_points=4,
+            save_figs=True,
+            dest=os.path.join(output_base, "yolo_detection"),
+            single_image=True
+        )
+
+        if locs is None:
+            print("\nNo arrowheads detected!")
+            print("="*60)
+            print("STEP 3: RUNNING PROCESS_IMAGE FOR NO-MARKING SCENARIO")
+            print("="*60)
+
+            # Create output directories
+            contour_dir = os.path.join(output_base, "contour_overlay")
+            mask_overlay_dir = os.path.join(output_base, "mask_overlay")
+            drawing_dir = os.path.join(output_base, "drawing")
+            skeleton_overlay_dir = os.path.join(output_base, "skeleton")
+            colormap_overlay_dir = os.path.join(output_base, "colormap_overlay")
+            ellipse_axis_overlay_dir = os.path.join(output_base, "ellipse_axis_overlay")
+
+            for p in [contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir,
+                      colormap_overlay_dir, ellipse_axis_overlay_dir]:
+                os.makedirs(p, exist_ok=True)
+
+            # Process image without markers
+            if os.path.exists(input_image):
+                _, _, seg_confidence, seg_uncertainty = process_image(
+                    input_image, contour_dir, mask_overlay_dir, drawing_dir,
+                    skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir,
+                    measurement_type
+                )
+                print(f"\nProcessing complete! Results saved to '{output_base}' directory")
+                print(f"Segmentation Confidence: {seg_confidence:.4f}")
+                print(f"Segmentation Uncertainty: {seg_uncertainty:.4f}")
+            else:
+                print(f"Error: Image file '{input_image}' not found!")
+        else:
+            print(f"\nArrowheads detected at locations: {locs}")
+            print(f"Detection visualization saved to '{output_base}/yolo_detection'")
+
+            # Step 3: Draw ellipse or line based on number of points
+            print("\n" + "="*60)
+            print("STEP 3: DRAWING OVERLAY BASED ON DETECTED POINTS")
+            print("="*60)
+
+            # Create output directory for marked overlays
+            marked_overlay_dir = os.path.join(output_base, "marked_overlay")
+            os.makedirs(marked_overlay_dir, exist_ok=True)
+
+            # Load the original image
+            original_image = cv2.imread(input_image)
+
+            if original_image is None:
+                print(f"Error: Could not load image from {input_image}")
+            else:
+                output_filename = os.path.join(marked_overlay_dir, os.path.basename(input_image))
+
+                if len(locs) == 4:
+                    print(f"Drawing ellipse with major and minor axes from 4 points...")
+                    img_with_ellipse, ellipse_mask = draw_ellipse_from_4_points(original_image, locs, output_filename)
+
+                    # Step 4: Run process_image to get segmentation mask
+                    print("\n" + "="*60)
+                    print("STEP 4: RUNNING PROCESS_IMAGE FOR SEGMENTATION COMPARISON")
+                    print("="*60)
+
+                    # Create output directories for process_image
+                    contour_dir = os.path.join(output_base, "contour_overlay")
+                    mask_overlay_dir = os.path.join(output_base, "mask_overlay")
+                    drawing_dir = os.path.join(output_base, "drawing")
+                    skeleton_overlay_dir = os.path.join(output_base, "skeleton")
+                    colormap_overlay_dir = os.path.join(output_base, "colormap_overlay")
+                    ellipse_axis_overlay_dir = os.path.join(output_base, "ellipse_axis_overlay")
+
+                    for p in [contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir,
+                              colormap_overlay_dir, ellipse_axis_overlay_dir]:
+                        os.makedirs(p, exist_ok=True)
+
+                    # Process image to get segmentation mask
+                    seg_mask, seg_image, seg_confidence, seg_uncertainty = process_image(
+                        input_image, contour_dir, mask_overlay_dir, drawing_dir,
+                        skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir,
+                        measurement_type
+                    )
+
+                    # Display segmentation metrics
+                    print(f"\nSegmentation Metrics:")
+                    print(f"  Confidence: {seg_confidence:.4f}")
+                    print(f"  Uncertainty: {seg_uncertainty:.4f}")
+
+                    # Step 5: Compare masks and visualize overlap
+                    print("\n" + "="*60)
+                    print("STEP 5: COMPARING ELLIPSE AND SEGMENTATION MASKS")
+                    print("="*60)
+
+                    # Calculate overlap metrics
+                    iou_score = calculate_iou(ellipse_mask, seg_mask)
+                    dice_score = calculate_dice_coefficient(ellipse_mask, seg_mask)
+
+                    print(f"\nOverlap Metrics:")
+                    print(f"  IoU (Intersection over Union): {iou_score:.4f}")
+                    print(f"  Dice Coefficient: {dice_score:.4f}")
+                    print(f"\n  Interpretation:")
+                    if iou_score >= 0.7:
+                        print(f"    - Excellent agreement between ellipse and segmentation (IoU >= 0.7)")
+                    elif iou_score >= 0.5:
+                        print(f"    - Good agreement between ellipse and segmentation (IoU >= 0.5)")
+                    elif iou_score >= 0.3:
+                        print(f"    - Moderate agreement between ellipse and segmentation (IoU >= 0.3)")
+                    else:
+                        print(f"    - Poor agreement between ellipse and segmentation (IoU < 0.3)")
+
+                    # Visualize overlap
+                    overlap_dir = os.path.join(output_base, "overlap_comparison")
+                    os.makedirs(overlap_dir, exist_ok=True)
+                    overlap_output = os.path.join(overlap_dir, os.path.basename(input_image))
+                    visualize_overlap(original_image, ellipse_mask, seg_mask, overlap_output)
+
+                    print(f"\n  Color coding:")
+                    print(f"    - Green: Ellipse only (from arrowhead detection)")
+                    print(f"    - Red: Segmentation only (from process_image)")
+                    print(f"    - Yellow: Overlap (agreement between both methods)")
+                    print(f"{'='*60}")
+
+                elif len(locs) == 2:
+                    print(f"Drawing straight line from 2 points...")
+                    draw_line_from_2_points(original_image, locs, output_filename)
+                else:
+                    print(f"Warning: Detected {len(locs)} points. Expected 2 or 4 points.")
+                    print(f"No overlay will be drawn for this case.")
+
+            print("\n" + "="*60)
+            print("WORKFLOW COMPLETE")
+            print("="*60)
+
+    elif os.path.isdir(input_path):
+        # Folder processing
+        print(f"Processing folder: {input_path}")
+        stats = process_folder(input_path, output_base, measurement_type, BRISQUE_THRESHOLD, NIQE_THRESHOLD,
+                               SEG_CONFIDENCE_THRESHOLD, SEG_UNCERTAINTY_THRESHOLD)
+    else:
+        print(f"Error: Input path '{input_path}' is neither a file nor a directory!")
         exit(1)
 
-    # Check quality thresholds
-    quality_pass = True
-    if brisque_score > BRISQUE_THRESHOLD:
-        print(f"\nWarning: BRISQUE score ({brisque_score:.4f}) exceeds threshold ({BRISQUE_THRESHOLD})")
-        quality_pass = False
-    else:
-        print(f"\nBRISQUE score ({brisque_score:.4f}) passes threshold ({BRISQUE_THRESHOLD})")
 
-    if niqe_score > NIQE_THRESHOLD:
-        print(f"Warning: NIQE score ({niqe_score:.4f}) exceeds threshold ({NIQE_THRESHOLD})")
-        quality_pass = False
-    else:
-        print(f"NIQE score ({niqe_score:.4f}) passes threshold ({NIQE_THRESHOLD})")
+#######################
 
-    if not quality_pass:
-        print("\nImage quality is below acceptable thresholds. Consider using a higher quality image.")
-        print("Continuing with processing anyway...")
-    else:
-        print("\nImage quality is acceptable. Proceeding with detection.")
-
-    # Step 2: Detect Arrowheads
-    print("\n" + "="*60)
-    print("STEP 2: DETECTING ARROWHEADS")
-    print("="*60)
-
-    img, locs, filename = detect_all(
-        data_root=input_image,
-        yolo_weight=yolo_weight,
-        yolo_cfg=yolo_cfg,
-        num_points=4,
-        save_figs=True,
-        dest=os.path.join(output_base, "yolo_detection"),
-        single_image=True
-    )
-
-    if locs is None:
-        print("\nNo arrowheads detected!")
-        print("="*60)
-        print("STEP 3: RUNNING PROCESS_IMAGE FOR NO-MARKING SCENARIO")
-        print("="*60)
-
-        # Create output directories
-        contour_dir = os.path.join(output_base, "contour_overlay")
-        mask_overlay_dir = os.path.join(output_base, "mask_overlay")
-        drawing_dir = os.path.join(output_base, "drawing")
-        skeleton_overlay_dir = os.path.join(output_base, "skeleton")
-        colormap_overlay_dir = os.path.join(output_base, "colormap_overlay")
-        ellipse_axis_overlay_dir = os.path.join(output_base, "ellipse_axis_overlay")
-
-        for p in [contour_dir, mask_overlay_dir, drawing_dir, skeleton_overlay_dir,
-                  colormap_overlay_dir, ellipse_axis_overlay_dir]:
-            os.makedirs(p, exist_ok=True)
-
-        # Process image without markers
-        if os.path.exists(input_image):
-            process_image(input_image, contour_dir, mask_overlay_dir, drawing_dir,
-                         skeleton_overlay_dir, colormap_overlay_dir, ellipse_axis_overlay_dir,
-                         measurement_type)
-            print(f"\nProcessing complete! Results saved to '{output_base}' directory")
-        else:
-            print(f"Error: Image file '{input_image}' not found!")
-    else:
-        print(f"\nArrowheads detected at locations: {locs}")
-        print(f"Detection visualization saved to '{output_base}/yolo_detection'")
-
-        # Step 3: Draw ellipse or line based on number of points
-        print("\n" + "="*60)
-        print("STEP 3: DRAWING OVERLAY BASED ON DETECTED POINTS")
-        print("="*60)
-
-        # Create output directory for marked overlays
-        marked_overlay_dir = os.path.join(output_base, "marked_overlay")
-        os.makedirs(marked_overlay_dir, exist_ok=True)
-
-        # Load the original image
-        original_image = cv2.imread(input_image)
-
-        if original_image is None:
-            print(f"Error: Could not load image from {input_image}")
-        else:
-            output_filename = os.path.join(marked_overlay_dir, os.path.basename(input_image))
-
-            if len(locs) == 4:
-                print(f"Drawing ellipse with major and minor axes from 4 points...")
-                draw_ellipse_from_4_points(original_image, locs, output_filename)
-            elif len(locs) == 2:
-                print(f"Drawing straight line from 2 points...")
-                draw_line_from_2_points(original_image, locs, output_filename)
-            else:
-                print(f"Warning: Detected {len(locs)} points. Expected 2 or 4 points.")
-                print(f"No overlay will be drawn for this case.")
-
-    print("\n" + "="*60)
-    print("WORKFLOW COMPLETE")
-    print("="*60)
+#   python inf_2.py \
+#     --input /path/to/images/ \
+#     --output /path/to/output/ \
+#     --measurement-type 02_bpd_hc_transthalamic \
+#     --seg-confidence-threshold 0.7 \
+#     --seg-uncertainty-threshold 0.05
