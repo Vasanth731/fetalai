@@ -1568,6 +1568,12 @@ def process_folder(input_folder, output_base, measurement_type, brisque_threshol
                     print("STEP 6: COMPARING ELLIPSE AND SEGMENTATION MASKS")
                     print("="*60)
 
+                    csv_output = "scores_bpd.csv"
+                    if not os.path.exists(csv_output):
+                        with open(csv_output, "a", newline="") as f:
+                            writer = csv.writer(f)
+                            writer.writerow(["image_name", "IoU", "Dice"])
+
                     # Calculate overlap metrics
                     iou_score = calculate_iou(ellipse_mask, seg_mask)
                     dice_score = calculate_dice_coefficient(ellipse_mask, seg_mask)
@@ -1584,6 +1590,14 @@ def process_folder(input_folder, output_base, measurement_type, brisque_threshol
                         print(f"    - Moderate agreement between ellipse and segmentation (IoU >= 0.3)")
                     else:
                         print(f"    - Poor agreement between ellipse and segmentation (IoU < 0.3)")
+
+                    with open(csv_output, "a", newline="") as f:
+                        writer = csv.writer(f)
+                        writer.writerow([
+                            os.path.basename(image_path),
+                            f"{iou_score:.4f}",
+                            f"{dice_score:.4f}"
+                        ])
 
                     # Visualize overlap in threshold-specific folder
                     overlap_dir = os.path.join(output_base, threshold_folder, "overlap_comparison")
