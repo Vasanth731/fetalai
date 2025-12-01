@@ -1907,9 +1907,4 @@ if __name__ == "__main__":
 
 #######################
 
-#   python inf_2.py \
-#     --input /path/to/images/ \
-#     --output /path/to/output/ \
-#     --measurement-type 02_bpd_hc_transthalamic \
-#     --seg-confidence-threshold 0.7 \
-#     --seg-uncertainty-threshold 0.05
+#   python inf_2.py --input "/path/to/images/" --output "/path/to/output/" --measurement-type "01_abdominal_circumference", "02_bpd_hc_transthalamic", "03_femur_length" --seg-confidence-threshold 0.9 --seg-uncertainty-threshold 0.05

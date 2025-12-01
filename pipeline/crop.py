@@ -2,6 +2,7 @@ import os
 import cv2
 
 MINDRAY_TRUNCATE_ROI = [330, 116, 1450, 880]   # x1, y1, x2, y2
+SONO_TRUNCATE_ROI = [294, 113, 1795, 968] 
 
 def crop_folder_images(input_dir, output_dir):
     if not os.path.exists(output_dir):
@@ -27,6 +28,7 @@ def crop_folder_images(input_dir, output_dir):
 
 
 # Example usage:
-input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/01_Abdominal_Circumference"
-output_folder = "cropped_images_mindray_ac"
+# input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/new_parsed_dataset/01_Abdominal_Circumference"
+input_folder = "/home/htic/fetalai_data/vasanth/datasets_to_work_with/parsed/old_parsed_biometry/correct_size/fl"
+output_folder = "cropped_images_sonoscape_fl"
 crop_folder_images(input_folder, output_folder)
