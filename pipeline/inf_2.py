@@ -1766,6 +1766,7 @@ if __name__ == "__main__":
             single_image=True
         )
 
+
         if locs is None:
             print("\nNo arrowheads detected!")
             print("="*60)
@@ -1800,6 +1801,8 @@ if __name__ == "__main__":
             print(f"\nArrowheads detected at locations: {locs}")
             print(f"Detection visualization saved to '{output_base}/yolo_detection'")
 
+            
+
             # Step 3: Draw ellipse or line based on number of points
             print("\n" + "="*60)
             print("STEP 3: DRAWING OVERLAY BASED ON DETECTED POINTS")
@@ -1820,6 +1823,7 @@ if __name__ == "__main__":
                 if len(locs) == 4:
                     print(f"Drawing ellipse with major and minor axes from 4 points...")
                     img_with_ellipse, ellipse_mask = draw_ellipse_from_4_points(original_image, locs, output_filename)
+
 
                     # Step 4: Run process_image to get segmentation mask
                     print("\n" + "="*60)
