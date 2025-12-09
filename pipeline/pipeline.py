@@ -778,6 +778,63 @@ def process_image(image_path, contour_dir, mask_overlay_dir, drawing_dir, skelet
 
 
 ####################################### model and inference for marked images ####################################
+# def detect_arrowhead(path, net, conf=0.5):
+
+#     # determine the output layers
+#     ln = net.getLayerNames()
+#     ln = [ln[i - 1] for i in net.getUnconnectedOutLayers()]
+
+#     img0 = cv2.imread(path)
+#     img = img0.copy()
+
+#     blob = cv2.dnn.blobFromImage(img, 1/255.0, (416, 416), swapRB=True, crop=False)
+
+#     net.setInput(blob)
+#     t0 = time.time()
+#     outputs = net.forward(ln)
+#     t = time.time() - t0
+
+#     # combine the 3 output groups into 1 (10647, 85)
+#     # large objects (507, 85)
+#     # medium objects (2028, 85)
+#     # small objects (8112, 85)
+#     # outputs = outputs[-1]
+#     outputs = np.vstack(outputs)
+
+#     H, W = img.shape[:2]
+
+#     boxes = []
+#     confidences = []
+#     classIDs = []
+
+#     for output in outputs:
+#         scores = output[5:]
+#         classID = np.argmax(scores)
+#         confidence = scores[classID]
+#         if confidence > conf:
+#             x, y, w, h = output[:4] * np.array([W, H, W, H])
+#             p0 = int(x - w//2), int(y - h//2)
+#             p1 = int(x + w//2), int(y + h//2)
+#             boxes.append([*p0, int(w), int(h)])
+#             confidences.append(float(confidence))
+#             classIDs.append(classID)
+
+#     indices = cv2.dnn.NMSBoxes(boxes, confidences, conf, conf-0.1)
+#     locs = []
+#     if len(indices)>0:
+#         for i in indices.flatten():
+#             (x, y) = (boxes[i][0], boxes[i][1])
+#             (w, h) = (boxes[i][2], boxes[i][3])
+#             center = int(x + w//2), int(y + h//2)
+#             locs.append(center)
+
+#             cv2.rectangle(img, (x, y), (x + w, y + h), (0,255,0), 2)
+#             text = "{}: {:.4f}".format("ArrowHead", confidences[i])
+#             cv2.putText(img, text, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+#     else:
+#         locs = None
+#     return img, locs
+
 def detect_arrowhead(path, net, conf=0.5):
 
     # determine the output layers
@@ -790,15 +847,7 @@ def detect_arrowhead(path, net, conf=0.5):
     blob = cv2.dnn.blobFromImage(img, 1/255.0, (416, 416), swapRB=True, crop=False)
 
     net.setInput(blob)
-    t0 = time.time()
     outputs = net.forward(ln)
-    t = time.time() - t0
-
-    # combine the 3 output groups into 1 (10647, 85)
-    # large objects (507, 85)
-    # medium objects (2028, 85)
-    # small objects (8112, 85)
-    # outputs = outputs[-1]
     outputs = np.vstack(outputs)
 
     H, W = img.shape[:2]
@@ -811,6 +860,7 @@ def detect_arrowhead(path, net, conf=0.5):
         scores = output[5:]
         classID = np.argmax(scores)
         confidence = scores[classID]
+
         if confidence > conf:
             x, y, w, h = output[:4] * np.array([W, H, W, H])
             p0 = int(x - w//2), int(y - h//2)
@@ -821,6 +871,7 @@ def detect_arrowhead(path, net, conf=0.5):
 
     indices = cv2.dnn.NMSBoxes(boxes, confidences, conf, conf-0.1)
     locs = []
+
     if len(indices)>0:
         for i in indices.flatten():
             (x, y) = (boxes[i][0], boxes[i][1])
@@ -830,9 +881,35 @@ def detect_arrowhead(path, net, conf=0.5):
 
             cv2.rectangle(img, (x, y), (x + w, y + h), (0,255,0), 2)
             text = "{}: {:.4f}".format("ArrowHead", confidences[i])
-            cv2.putText(img, text, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+            cv2.putText(img, text, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (0,255,0), 1)
+
+        # ------------------------------
+        # SORTING LOCS IN ANTICLOCKWISE ORDER
+        # ------------------------------
+
+        # Reference point = image center
+        cx, cy = W // 2, H // 2
+
+        # Convert each point to angle
+        angles = []
+        for (px, py) in locs:
+            angle = np.arctan2(py - cy, px - cx)  # standard angle
+            angles.append(angle)
+
+        # Convert locs + angles to a sorted list (right to anticlockwise)
+        # Start from angle = 0 (right direction), go anticlockwise
+        sorted_locs = [p for _, p in sorted(
+            zip(angles, locs),
+            key=lambda x: (x[0] + 2*np.pi) % (2*np.pi)
+        )]
+
+        # Overwrite locs
+        locs = sorted_locs
+
     else:
         locs = None
+
     return img, locs
 
 
