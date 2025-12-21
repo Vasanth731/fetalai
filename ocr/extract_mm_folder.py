@@ -8,8 +8,8 @@ from paddleocr import PaddleOCR
 ocr = PaddleOCR(use_angle_cls=True, lang='en')
 
 # Path to the folder containing images
-image_folder = '/home/htic/fetalai_data/vasanth/datasets_to_work_with/retro/with_annotation_retro1_2/BPD'  # ← Replace this with your folder path
-output_csv = 'extracted_measurements_BPD.csv'
+image_folder = '/home/htic/fetalai_data/vasanth/fl_anid'  # ← Replace this with your folder path
+output_csv = 'extracted_measurements_FL.csv'
 
 # Regex pattern to find "1 D" and "2 D" measurements
 pattern_1d = re.compile(r"1\s*D[:\-]?\s*([\d.]+)\s*cm", re.IGNORECASE)

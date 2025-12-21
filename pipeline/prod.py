@@ -14,6 +14,10 @@ from scipy.special import gamma
 import warnings
 import re
 from paddleocr import PaddleOCR
+import pandas as pd
+import ast
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 warnings.filterwarnings('ignore')
 
 ################################# model for no marking images #############################################
@@ -1514,6 +1518,274 @@ def extract_measurements_ocr(image_path, ocr_engine):
         return "Error", "Error", ""
 
 
+# ============================================================================
+# BIOMETRY MEASUREMENT PROCESSING PIPELINE
+# ============================================================================
+
+def calculate_distance(point1, point2):
+    """Calculate Euclidean distance between two points."""
+    x1, y1 = point1
+    x2, y2 = point2
+    return np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+
+
+def calculate_axes_from_arrowheads(coords_list):
+    """
+    Calculate major and minor axis lengths from arrowhead coordinates.
+    Coordinates are in anticlockwise order: right, top, left, bottom
+    Major axis: horizontal distance (right to left)
+    Minor axis: vertical distance (top to bottom)
+    """
+    # Coordinates order: right, top, left, bottom
+    right = coords_list[0]
+    top = coords_list[1]
+    left = coords_list[2]
+    bottom = coords_list[3]
+
+    # Major axis: distance from right to left (horizontal)
+    major_axis_pixels = calculate_distance(right, left)
+
+    # Minor axis: distance from top to bottom (vertical)
+    minor_axis_pixels = calculate_distance(top, bottom)
+
+    return major_axis_pixels, minor_axis_pixels
+
+
+def parse_coordinates_from_str(coord_str):
+    """
+    Parse coordinate string to extract list of tuples.
+    Handles format: [(x1, y1), ...] or string representation
+    """
+    if isinstance(coord_str, str):
+        coord_str = coord_str.replace('np.float64', '')
+        coords = ast.literal_eval(coord_str)
+    else:
+        coords = coord_str
+    return coords
+
+
+def calculate_pixel_to_mm_ratio_single(arrowhead_coords, measurement_1d_cm, measurement_2d_cm):
+    """
+    Calculate pixel to mm conversion ratio from arrowhead coordinates and OCR measurements.
+
+    Args:
+        arrowhead_coords: List of 4 (x, y) tuples in anticlockwise order
+        measurement_1d_cm: 1D measurement in cm (from OCR)
+        measurement_2d_cm: 2D measurement in cm (from OCR)
+
+    Returns:
+        dict with pixel_to_mm_ratio and intermediate values
+    """
+    if arrowhead_coords is None or len(arrowhead_coords) != 4:
+        return {
+            'major_axis_mm': np.nan,
+            'minor_axis_mm': np.nan,
+            'major_axis_pixels': np.nan,
+            'minor_axis_pixels': np.nan,
+            'pixel_to_mm_ratio': np.nan
+        }
+
+    # Calculate pixel measurements
+    major_pixels, minor_pixels = calculate_axes_from_arrowheads(arrowhead_coords)
+
+    # Convert cm to mm
+    try:
+        major_mm = float(measurement_1d_cm) * 10 if measurement_1d_cm != "Not found" else np.nan
+        minor_mm = float(measurement_2d_cm) * 10 if measurement_2d_cm != "Not found" else np.nan
+    except (ValueError, TypeError):
+        major_mm = np.nan
+        minor_mm = np.nan
+
+    # Calculate pixel to mm ratios
+    if pd.notna(major_mm) and major_mm != 0:
+        major_ratio = major_pixels / major_mm
+    else:
+        major_ratio = np.nan
+
+    if pd.notna(minor_mm) and minor_mm != 0:
+        minor_ratio = minor_pixels / minor_mm
+    else:
+        minor_ratio = np.nan
+
+    # Calculate average pixel to mm ratio
+    if pd.notna(major_ratio) and pd.notna(minor_ratio):
+        avg_ratio = (major_ratio + minor_ratio) / 2
+    elif pd.notna(major_ratio):
+        avg_ratio = major_ratio
+    elif pd.notna(minor_ratio):
+        avg_ratio = minor_ratio
+    else:
+        avg_ratio = np.nan
+
+    return {
+        'major_axis_mm': major_mm,
+        'minor_axis_mm': minor_mm,
+        'major_axis_pixels': major_pixels,
+        'minor_axis_pixels': minor_pixels,
+        'pixel_to_mm_ratio': avg_ratio
+    }
+
+
+def calculate_ellipse_measurements_single(ellipse_coords, pixel_to_mm_ratio):
+    """
+    Calculate ellipse measurements in mm from coordinates using pixel to mm ratio.
+
+    Args:
+        ellipse_coords: List of (x, y) tuples (ellipse endpoints)
+        pixel_to_mm_ratio: Conversion ratio from pixels to mm
+
+    Returns:
+        dict with major_axis_mm and minor_axis_mm
+    """
+    if ellipse_coords is None or len(ellipse_coords) == 0 or pd.isna(pixel_to_mm_ratio):
+        return {
+            'ellipse_major_axis_mm': np.nan,
+            'ellipse_minor_axis_mm': np.nan
+        }
+
+    try:
+        # For 4-point ellipse fit (right, top, left, bottom)
+        if len(ellipse_coords) == 4:
+            right, top, left, bottom = ellipse_coords
+
+            # Calculate horizontal and vertical axes
+            horizontal_axis_px = calculate_distance(right, left)
+            vertical_axis_px = calculate_distance(top, bottom)
+
+            # Major axis is the larger, minor axis is the smaller
+            major_axis_px = max(horizontal_axis_px, vertical_axis_px)
+            minor_axis_px = min(horizontal_axis_px, vertical_axis_px)
+
+            # Convert to mm
+            major_axis_mm = major_axis_px / pixel_to_mm_ratio
+            minor_axis_mm = minor_axis_px / pixel_to_mm_ratio
+
+        # For 2-point line fit
+        elif len(ellipse_coords) == 2:
+            pt1, pt2 = ellipse_coords
+            length_px = calculate_distance(pt1, pt2)
+            major_axis_mm = length_px / pixel_to_mm_ratio
+            minor_axis_mm = np.nan
+
+        else:
+            major_axis_mm = np.nan
+            minor_axis_mm = np.nan
+
+        return {
+            'ellipse_major_axis_mm': major_axis_mm,
+            'ellipse_minor_axis_mm': minor_axis_mm
+        }
+
+    except Exception as e:
+        print(f"Error calculating ellipse measurements: {e}")
+        return {
+            'ellipse_major_axis_mm': np.nan,
+            'ellipse_minor_axis_mm': np.nan
+        }
+
+
+# ============================================================================
+# IMAGE ANNOTATION FUNCTIONS
+# ============================================================================
+
+def annotate_image_with_measurements(image_path, output_path, measurements):
+    """
+    Annotate image with measurement data in top left corner.
+
+    Args:
+        image_path: Path to input image
+        output_path: Path to save annotated image
+        measurements: Dictionary containing measurement values
+    """
+    # Open the image
+    img = Image.open(image_path)
+    draw = ImageDraw.Draw(img)
+
+    # Try to use a reasonable font, fall back to default if not available
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+    except:
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 16)
+            font_small = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 14)
+        except:
+            font = ImageFont.load_default()
+            font_small = ImageFont.load_default()
+
+    # Prepare text lines
+    text_lines = []
+
+    # Add segmentation confidence if available
+    if 'segmentation_confidence' in measurements and pd.notna(measurements['segmentation_confidence']):
+        text_lines.append(f"SegConf: {measurements['segmentation_confidence']:.4f}")
+
+    # Add major axis if available
+    if 'ellipse_major_axis_mm' in measurements and pd.notna(measurements['ellipse_major_axis_mm']):
+        text_lines.append(f"Major Axis: {measurements['ellipse_major_axis_mm']:.2f} mm")
+
+    # Add minor axis if available
+    if 'ellipse_minor_axis_mm' in measurements and pd.notna(measurements['ellipse_minor_axis_mm']):
+        text_lines.append(f"Minor Axis: {measurements['ellipse_minor_axis_mm']:.2f} mm")
+
+    # Add IoU if available
+    if 'IoU' in measurements and pd.notna(measurements['IoU']):
+        text_lines.append(f"IoU: {measurements['IoU']:.4f}")
+
+    # Add Dice if available
+    if 'Dice' in measurements and pd.notna(measurements['Dice']):
+        text_lines.append(f"Dice: {measurements['Dice']:.4f}")
+
+    # Add BRISQUE score if available
+    if 'brisque_score' in measurements and pd.notna(measurements['brisque_score']):
+        text_lines.append(f"BRISQUE: {measurements['brisque_score']:.2f}")
+
+    # Add NIQE score if available
+    if 'niqe_score' in measurements and pd.notna(measurements['niqe_score']):
+        text_lines.append(f"NIQE: {measurements['niqe_score']:.2f}")
+
+    # If no measurements to display, skip annotation
+    if not text_lines:
+        print("No measurements to annotate, copying original image")
+        img.save(output_path, quality=95)
+        return
+
+    # Calculate text background size
+    margin = 10
+    line_height = 22
+    max_width = 0
+
+    for line in text_lines:
+        bbox = draw.textbbox((0, 0), line, font=font_small)
+        text_width = bbox[2] - bbox[0]
+        max_width = max(max_width, text_width)
+
+    bg_width = max_width + 2 * margin
+    bg_height = len(text_lines) * line_height + 2 * margin
+
+    # Draw semi-transparent background
+    overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.rectangle([(0, 0), (bg_width, bg_height)], fill=(0, 0, 0, 180))
+
+    # Composite the overlay onto the image
+    img = img.convert('RGBA')
+    img = Image.alpha_composite(img, overlay)
+    img = img.convert('RGB')
+
+    # Draw text on top
+    draw = ImageDraw.Draw(img)
+    y_position = margin
+
+    for line in text_lines:
+        draw.text((margin, y_position), line, fill=(255, 255, 255), font=font_small)
+        y_position += line_height
+
+    # Save the annotated image
+    img.save(output_path, quality=95)
+    print(f"Annotated image saved to: {output_path}")
+
+
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
     
@@ -1533,6 +1805,8 @@ if __name__ == "__main__":
                         help="Minimum segmentation confidence threshold (default: 0.5)")
     parser.add_argument("--seg-uncertainty-threshold", type=float, default=0.1,
                         help="Maximum segmentation uncertainty threshold (default: 0.1)")
+    parser.add_argument("--annotate", action="store_true",
+                        help="Create annotated image with measurements overlaid")
 
     args = parser.parse_args()
 
@@ -1863,6 +2137,125 @@ if __name__ == "__main__":
 
         print(f"\nProcessing complete! Results saved to '{output_base}' directory")
 
+    # ============================================================================
+    # FINAL STEP: Consolidate all measurements into single CSV
+    # ============================================================================
+    print("\n" + "="*60)
+    print("FINAL STEP: CONSOLIDATING ALL MEASUREMENTS")
+    print("="*60)
+
+    filename = os.path.basename(input_image)
+
+    # Initialize result dictionary
+    result = {
+        'filename': filename,
+        'brisque_score': brisque_score if brisque_score is not None else np.nan,
+        'niqe_score': niqe_score if niqe_score is not None else np.nan,
+        '1D_cm': value_1d if value_1d != "Not found" and value_1d != "Error" else np.nan,
+        '2D_cm': value_2d if value_2d != "Not found" and value_2d != "Error" else np.nan,
+    }
+
+    # Convert 1D and 2D to mm
+    try:
+        result['1D_mm'] = float(value_1d) * 10 if value_1d != "Not found" and value_1d != "Error" else np.nan
+        result['2D_mm'] = float(value_2d) * 10 if value_2d != "Not found" and value_2d != "Error" else np.nan
+    except (ValueError, TypeError):
+        result['1D_mm'] = np.nan
+        result['2D_mm'] = np.nan
+
+    # Calculate pixel to mm ratio
+    ratio_data = calculate_pixel_to_mm_ratio_single(locs, value_1d, value_2d)
+    result['pixel_to_mm_ratio'] = ratio_data['pixel_to_mm_ratio']
+    result['arrowhead_major_axis_mm'] = ratio_data['major_axis_mm']
+    result['arrowhead_minor_axis_mm'] = ratio_data['minor_axis_mm']
+
+    # Calculate ellipse measurements in mm
+    if 'endpoints_sorted' in locals() and endpoints_sorted is not None:
+        ellipse_data = calculate_ellipse_measurements_single(
+            endpoints_sorted,
+            ratio_data['pixel_to_mm_ratio']
+        )
+        result['ellipse_major_axis_mm'] = ellipse_data['ellipse_major_axis_mm']
+        result['ellipse_minor_axis_mm'] = ellipse_data['ellipse_minor_axis_mm']
+    else:
+        result['ellipse_major_axis_mm'] = np.nan
+        result['ellipse_minor_axis_mm'] = np.nan
+
+    # Add segmentation metrics
+    if 'seg_confidence' in locals():
+        result['segmentation_confidence'] = seg_confidence
+        result['segmentation_uncertainty'] = seg_uncertainty
+    else:
+        result['segmentation_confidence'] = np.nan
+        result['segmentation_uncertainty'] = np.nan
+
+    # Add IoU and Dice scores
+    if 'iou_score' in locals() and 'dice_score' in locals():
+        result['IoU'] = iou_score
+        result['Dice'] = dice_score
+    else:
+        result['IoU'] = np.nan
+        result['Dice'] = np.nan
+
+    # Create DataFrame and save to CSV
+    final_df = pd.DataFrame([result])
+
+    # Reorder columns for better readability
+    column_order = [
+        'filename',
+        'brisque_score',
+        'niqe_score',
+        '1D_cm',
+        '1D_mm',
+        '2D_cm',
+        '2D_mm',
+        'pixel_to_mm_ratio',
+        'arrowhead_major_axis_mm',
+        'arrowhead_minor_axis_mm',
+        'ellipse_major_axis_mm',
+        'ellipse_minor_axis_mm',
+        'segmentation_confidence',
+        'segmentation_uncertainty',
+        'IoU',
+        'Dice'
+    ]
+
+    final_df = final_df[column_order]
+
+    # Save consolidated measurements
+    consolidated_csv_path = os.path.join(output_base, "consolidated_measurements.csv")
+    final_df.to_csv(consolidated_csv_path, index=False)
+
+    print(f"\nConsolidated measurements saved to: {consolidated_csv_path}")
+    print(f"\nFinal measurements:")
+    print(final_df.to_string(index=False))
+
+    # ============================================================================
+    # OPTIONAL: Create annotated image
+    # ============================================================================
+    if args.annotate:
+        print("\n" + "="*60)
+        print("CREATING ANNOTATED IMAGE")
+        print("="*60)
+
+        # Create annotated images directory
+        annotated_dir = os.path.join(output_base, "annotated")
+        os.makedirs(annotated_dir, exist_ok=True)
+
+        # Use the original input image for annotation
+        annotated_output_path = os.path.join(annotated_dir, os.path.basename(input_image))
+
+        try:
+            # Convert result dict to measurements for annotation
+            annotate_image_with_measurements(
+                input_image,
+                annotated_output_path,
+                result
+            )
+            print(f"Annotated image created successfully!")
+        except Exception as e:
+            print(f"Error creating annotated image: {e}")
+
     print("\n" + "="*60)
     print("WORKFLOW COMPLETE")
     print("="*60)
@@ -1871,3 +2264,6 @@ if __name__ == "__main__":
 #######################
 # Example usage:
 #   python prod.py --input "/path/to/image.jpg" --output "/path/to/output/" --measurement-type "02_bpd_hc_transthalamic"
+#
+# With annotation:
+#   python prod.py --input "/path/to/image.jpg" --output "/path/to/output/" --measurement-type "02_bpd_hc_transthalamic" --annotate
